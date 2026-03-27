@@ -4,180 +4,115 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-# Configurações iniciais da página (Tema Escuro como Padrão)
+# Configurações iniciais
 st.set_page_config(page_title="Simulador B3 Pro", layout="wide", initial_sidebar_state="collapsed")
 
-# Estilização Minimalista (Modo Escuro Forçado)
+# Estilização Google Finance Dark
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap');
-    
-    /* Fonte estilo Google */
-    html, body, [class*="css"], .stText { font-family: 'Roboto', sans-serif; }
-    
-    /* Fundo Escuro */
+    html, body, [class*="css"] { font-family: 'Roboto', sans-serif; }
     .stApp { background-color: #101214; color: #e8eaed; }
-    
-    /* Estilo dos Cards (Métricas) */
     [data-testid="stMetric"] {
         background-color: #1a1c1e;
-        padding: 25px;
+        padding: 20px;
         border-radius: 8px;
         border: 1px solid #2d3033;
     }
-    [data-testid="stMetricLabel"] { color: #9aa0a6; font-size: 14px; }
-    [data-testid="stMetricValue"] { color: #e8eaed; font-size: 28px; font-weight: 400; }
-    
-    /* Botão Lateral */
-    .stButton>button {
-        border-radius: 4px;
-        background-color: #303134;
-        color: #e8eaed;
-        font-weight: 500;
-        border: 1px solid #5f6368;
-    }
-    
-    /* Remove Emojis e limpa cabeçalho */
-    .css-10trblm { font-size: 24px; }
+    .company-header { display: flex; align-items: center; gap: 15px; margin-bottom: 20px; }
+    .company-logo { width: 48px; height: 48px; border-radius: 8px; background-color: white; padding: 4px; }
     </style>
     """, unsafe_allow_html=True)
 
-# Título Limpo (Sem Emojis)
-st.title("Simulador de Trading Histórico")
-st.caption("Performance baseada em dados reais da B3 extraídos do Yahoo Finance")
+# Dicionário simples para Logos (Domínios das empresas)
+logos_db = {
+    "PETR4": "petrobras.com.br", "VALE3": "vale.com", "ITUB4": "itau.com.br",
+    "BBAS3": "bb.com.br", "BBDC4": "bradesco.com.br", "MGLU3": "magazineluiza.com.br",
+    "ABEV3": "ambev.com.br", "WEGE3": "weg.net"
+}
 
-# Sidebar - Parâmetros de Entrada
 with st.sidebar:
     st.header("Configurações")
     ticker_raw = st.text_input("Ação (ex: VALE3, PETR4)", "PETR4").strip().upper()
     ticker = f"{ticker_raw}.SA" if not ticker_raw.endswith(".SA") else ticker_raw
-    
-    quantidade = st.number_input("Quantidade de Ações", min_value=1, value=100, step=10)
-    corretagem = st.number_input("Corretagem por Ordem (R$)", value=0.00, step=0.50)
+    quantidade = st.number_input("Quantidade", min_value=1, value=100)
+    corretagem = st.number_input("Corretagem (R$)", value=0.0)
     
     st.divider()
-    
-    # Seleção de Período estilo "Google"
-    periodo = st.selectbox("Período Rápido", 
-                         ["Personalizado", "1 Mês", "6 Meses", "YTD", "1 Ano", "5 Anos"], 
-                         index=4)
-    
-    hoje = datetime.now()
-    if periodo == "1 Mês":
-        data_inicio = hoje - timedelta(days=30)
-        data_fim = hoje
-    elif periodo == "6 Meses":
-        data_inicio = hoje - timedelta(days=180)
-        data_fim = hoje
-    elif periodo == "YTD":
-        data_inicio = datetime(hoje.year, 1, 1)
-        data_fim = hoje
-    elif periodo == "1 Ano":
-        data_inicio = hoje - timedelta(days=365)
-        data_fim = hoje
-    elif periodo == "5 Anos":
-        data_inicio = hoje - timedelta(days=365*5)
-        data_fim = hoje
-    else:
-        # Padrão Data BR no seletor
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            data_inicio = st.date_input("Início", value=pd.to_datetime("2021-03-29"), format="DD/MM/YYYY")
-        with col_d2:
-            data_fim = st.date_input("Fim", value=pd.to_datetime("2026-03-26"), format="DD/MM/YYYY")
+    periodo = st.selectbox("Período", ["1 Dia", "1 Mês", "6 Meses", "1 Ano", "5 Anos", "Personalizado"], index=4)
 
-# Lógica de Dados
-df = yf.download(ticker, start=data_inicio, end=data_fim, progress=False)
+# Lógica de Datas e Intervalo
+hoje = datetime.now()
+intervalo = "1d"
 
-# Correção de MultiIndex do yfinance
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
+if periodo == "1 Dia":
+    data_inicio = hoje - timedelta(days=3) # Pega 3 dias para garantir que pegue o último pregão aberto
+    data_fim = hoje
+    intervalo = "1h" # Ativa flutuação por hora
+elif periodo == "1 Mês": data_inicio = hoje - timedelta(days=30); data_fim = hoje
+elif periodo == "6 Meses": data_inicio = hoje - timedelta(days=180); data_fim = hoje
+elif periodo == "1 Ano": data_inicio = hoje - timedelta(days=365); data_fim = hoje
+elif periodo == "5 Anos": data_inicio = hoje - timedelta(days=365*5); data_fim = hoje
+else:
+    col_d1, col_d2 = st.columns(2)
+    data_inicio = col_d1.date_input("Início", value=pd.to_datetime("2023-01-01"))
+    data_fim = col_d2.date_input("Fim", value=hoje)
+
+# Busca de Dados
+df = yf.download(ticker, start=data_inicio, end=data_fim, interval=intervalo, progress=False)
+if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
 
 if not df.empty:
-    # Cálculos
-    p_compra = float(df['Close'].iloc[0])
-    p_venda = float(df['Close'].iloc[-1])
-    
-    investido = p_compra * quantidade
-    final_bruto = p_venda * quantidade
-    lucro_bruto = final_bruto - investido
-    custos = corretagem * 2
-    ir = max(0, lucro_bruto * 0.15) if lucro_bruto > 0 else 0
-    liquido = lucro_bruto - custos - ir
-    rentabilidade = (liquido / investido) * 100
+    # Se for "1 Dia", filtramos apenas o último dia disponível com dados
+    if periodo == "1 Dia":
+        ultimo_dia = df.index[-1].date()
+        df = df[df.index.date == ultimo_dia]
 
-    # Dashboard de Métricas - Valores Formatados (2 casas decimais, padrão BR)
-    c1, c2, c3, c4 = st.columns(4)
+    # Header com Logo
+    domain = logos_db.get(ticker_raw, "google.com") # Default google se não estiver no db
+    logo_url = f"https://logo.clearbit.com/{domain}"
     
-    def formatar_br(valor):
-        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    st.markdown(f"""
+        <div class="company-header">
+            <img src="{logo_url}" class="company-logo">
+            <h1 style="margin:0;">{ticker_raw}</h1>
+        </div>
+    """, unsafe_allow_html=True)
 
-    c1.metric("Investido", formatar_br(investido))
-    c2.metric("Valor Final", formatar_br(final_bruto))
-    
-    # Delta (Rentabilidade) sem emoji, apenas porcentagem
-    c3.metric("Lucro Líquido", formatar_br(liquido), 
-              delta=f"{rentabilidade:.2f}%", delta_color="normal")
-    
-    c4.metric("Impostos/Taxas", formatar_br(ir+custos))
+    # Cálculos e Métricas (Simplificados 2 casas)
+    p_compra, p_venda = float(df['Close'].iloc[0]), float(df['Close'].iloc[-1])
+    inv, bruto = p_compra * quantidade, p_venda * quantidade
+    liq = (bruto - inv) - (corretagem * 2) - max(0, (bruto-inv)*0.15 if bruto > inv else 0)
+    rent = (liq / inv) * 100
 
-    st.divider()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Investido", f"R$ {inv:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    c2.metric("Valor Final", f"R$ {bruto:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    c3.metric("Lucro Líquido", f"R$ {liq:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"{rent:.2f}%")
 
-    # Gráfico ESTILO GOOGLE (Clean, Linha Verde, Fundo Escuro)
+    # Gráfico Estilo Google (Trava de Range)
     fig = go.Figure()
-    
-    # Trace principal (Linha e Preenchimento)
     fig.add_trace(go.Scatter(
-        x=df.index, 
-        y=df['Close'], 
-        name="Preço",
-        mode='lines',
-        line=dict(color='#34a853', width=2), # Verde Google
-        fill='tozeroy',
-        fillcolor='rgba(52, 168, 83, 0.08)', # Preenchimento verde muito suave
-        
-        # Correção do Bug do Hover: Força apenas 2 casas decimais no hover
-        hovertemplate='<b>%{y:.2f} BRL</b><extra></extra>' 
+        x=df.index, y=df['Close'], mode='lines',
+        line=dict(color='#34a853' if liq >= 0 else '#ea4335', width=2),
+        fill='tozeroy', fillcolor='rgba(52, 168, 83, 0.05)' if liq >= 0 else 'rgba(234, 67, 53, 0.05)',
+        hovertemplate='<b>%{y:.2f} BRL</b><extra></extra>'
     ))
 
-    # Configuração do Layout do Gráfico (Idêntico ao Google)
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
+        template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
         margin=dict(l=0, r=0, t=10, b=0),
-        
-        # Hover unificado e limpo
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#202124", font_size=12, font_family="Roboto"),
-        
-        # Eixo X (Datas BR)
         xaxis=dict(
             showgrid=False, 
-            title="", 
-            tickformat="%d/%m/%y", # Data BR
-            tickfont=dict(color="#9aa0a6", size=10),
-            linecolor='#3c4043'
+            tickformat="%H:%M" if periodo == "1 Dia" else "%d/%m/%y",
+            range=[df.index[0], df.index[-1]], # TRAVA O GRÁFICO AQUI
+            fixedrange=False # Permite zoom, mas o range inicial e final limitam o scroll
         ),
-        
-        # Eixo Y (Preços na Direita)
-        yaxis=dict(
-            side="right", 
-            showgrid=True,
-            gridcolor='#2d3033', # Linhas de grade sutis
-            title="",
-            tickprefix="R$ ",
-            tickfont=dict(color="#9aa0a6", size=10),
-            zeroline=False
-        ),
-        height=400,
-        dragmode='pan'
+        yaxis=dict(side="right", gridcolor='#2d3033', tickprefix="R$ "),
+        height=450
     )
+    # Impede de puxar para os lados além dos dados
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])]) # Pula fins de semana
 
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}) # Remove barra de ferramentas irritante
-    
-    # Detalhes da operação em formato BR (Sem Emojis)
-    st.caption(f"Compra realizada em: {df.index[0].strftime('%d/%m/%Y')} | Venda em: {df.index[-1].strftime('%d/%m/%Y')}")
-
-else:
-    st.warning("Selecione um período ou ticker válido para ver os dados.")
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
