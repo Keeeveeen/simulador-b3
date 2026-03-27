@@ -1,5 +1,5 @@
+google-generativeai
 streamlit
 yfinance
 pandas
 plotly
-google-generativeai
