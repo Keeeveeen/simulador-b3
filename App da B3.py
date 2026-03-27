@@ -26,61 +26,72 @@ with st.sidebar:
     ticker = f"{busca}.SA" if not busca.endswith(".SA") else busca
     
     st.divider()
+    # Ajuste automático para evitar erros de dados do dia atual
+    data_max = datetime.now() - timedelta(days=1)
     data_compra = st.date_input("Data de Compra", value=pd.to_datetime("2023-01-01"))
-    # Força a data final para 2 dias atrás para garantir que o Yahoo Finance tenha os dados fechados
-    data_venda = st.date_input("Data de Venda", value=datetime.now() - timedelta(days=2))
+    data_venda = st.date_input("Data de Venda", value=data_max)
     
     st.divider()
     qtd = st.number_input("Quantidade de Ações", min_value=1, value=100)
     taxa = st.number_input("Corretagem por Ordem (R$)", value=4.50)
 
-# 3. Função de Coleta Segura
+# 3. Coleta de Dados Blindada
 def get_safe_data(t, start, end):
     try:
         s = yf.Ticker(t)
         d = s.history(start=start, end=end)
-        i = yf.download("^BVSP", start=start, end=end, progress=False)
-        return d, i, s.news
+        # Notícias são opcionais, se falhar o código segue
+        try: n = s.news
+        except: n = []
+        return d, n
     except:
-        return pd.DataFrame(), pd.DataFrame(), []
+        return pd.DataFrame(), []
 
-df_acao, df_ibov, news = get_safe_data(ticker, data_compra, data_venda)
+df_acao, news = get_safe_data(ticker, data_compra, data_venda)
 
-# 4. Validação e Cálculos
+# 4. Validação e Renderização
 if df_acao.empty or len(df_acao) < 2:
-    st.warning("⚠️ Dados insuficientes. Tente aumentar o período ou mudar o ativo.")
+    st.warning("⚠️ Dados insuficientes no Yahoo Finance para este período. Tente mudar as datas.")
 else:
-    # Ajuste de Colunas
-    if isinstance(df_acao.columns, pd.MultiIndex): df_acao.columns = df_acao.columns.get_level_values(0)
+    # Correção de Colunas
+    if isinstance(df_acao.columns, pd.MultiIndex): 
+        df_acao.columns = df_acao.columns.get_level_values(0)
     
-    # Preços e Cálculos
     precos = df_acao['Close'].dropna()
     p_ini, p_fim = float(precos.iloc[0]), float(precos.iloc[-1])
     
+    # Cálculos Financeiros
     investido = p_ini * qtd
-    valor_final = p_fim * qtd
+    valor_final_acao = p_fim * qtd
     dividendos = df_acao['Dividends'].sum() * qtd
-    resultado = (valor_final - investido) + dividendos - (taxa * 2)
+    resultado = (valor_final_acao - investido) + dividendos - (taxa * 2)
     rent_perc = (resultado / investido) * 100
 
-    # Layout de Métricas
-    st.title(f"Análise de Performance: {busca}")
+    # Dashboard Principal
+    st.title(f"Dashboard de Trading: {busca}")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Investido", f"R$ {investido:,.2f}")
+    c1.metric("Investido", f"R$ {investido:,.2f}")
     c2.metric("Dividendos", f"R$ {dividendos:,.2f}")
-    c3.metric("Lucro/Prejuízo Líquido", f"R$ {resultado:,.2f}", delta=f"{rent_perc:.2f}%")
+    c3.metric("Lucro Líquido", f"R$ {resultado:,.2f}", delta=f"{rent_perc:.2f}%")
 
-    # Gráfico de Preço
+    # Gráfico de Performance
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=precos.index, y=precos, name="Preço de Fechamento", line=dict(color='#34a853')))
-    fig.update_layout(template="plotly_dark", margin=dict(l=0,r=0,t=20,b=0), height=400)
+    fig.add_trace(go.Scatter(x=precos.index, y=precos, name="Preço", line=dict(color='#34a853', width=2)))
+    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # 5. IA GEMINI
+    # 5. IA GEMINI (Agora com a string corrigida)
     st.divider()
-    if st.button("✨ Gerar Insight com IA"):
-        with st.spinner("O Gemini está analisando o mercado..."):
+    if st.button("✨ Gerar Insight com Gemini IA"):
+        with st.spinner("O Gemini está analisando os motivos do mercado..."):
             try:
                 model = genai.GenerativeModel('gemini-1.5-flash')
-                contexto_noticias = [n['title'] for n in news[:3]] if news else ["Nenhuma notícia encontrada."]
-                prompt = f"Ação {busca}. Rentabilidade {rent_perc:.2f}%. Notícias: {contexto_noticias}. Explique os motivos dessa
+                contexto_noticias = [n.get('title', 'Notícia sem título') for n in news[:3]] if news else ["Nenhuma notícia encontrada."]
+                
+                # STRING CORRIGIDA ABAIXO (Faltava fechar aspas ou quebra de linha)
+                prompt = f"Analise o ativo {busca}. Retorno: {rent_perc:.2f}%. Notícias: {contexto_noticias}. Como economista, explique brevemente o porquê dessa variação."
+                
+                response = model.generate_content(prompt)
+                st.info(response.text)
+            except Exception as e:
+                st.error(f"Erro na IA: {str(e)}")
