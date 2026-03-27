@@ -49,80 +49,77 @@ with st.sidebar:
 def get_quant_data(ticker, start, end):
     stock = yf.Ticker(ticker)
     df = stock.history(start=start, end=end)
-    ibov = yf.download("^BVSP", start=start, end=end, progress=False)['Close']
+    ibov = yf.download("^BVSP", start=start, end=end, progress=False)
     return df, ibov
 
 try:
     df, ibov = get_quant_data(ticker, data_compra, data_venda)
 
     if not df.empty:
-        # --- CÁLCULOS QUANT ---
-        p_ini, p_fim = float(df['Close'].iloc[0]), float(df['Close'].iloc[-1])
-        div_total = df['Dividends'].sum() * qtd
+        # --- REPARO TÉCNICO (FIX 1D VECTOR) ---
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        if isinstance(ibov.columns, pd.MultiIndex):
+            ibov.columns = ibov.columns.get_level_values(0)
+
+        # Garantindo vetores 1D limpos para o Plotly
+        precos_acao = df['Close'].squeeze()
+        precos_ibov = ibov['Close'].squeeze()
+        dividendos_serie = df['Dividends'].squeeze()
+
+        # --- CÁLCULOS ---
+        p_ini, p_fim = float(precos_acao.iloc[0]), float(precos_acao.iloc[-1])
+        div_total = dividendos_serie.sum() * qtd
         investido = p_ini * qtd
         bruto = p_fim * qtd
         lucro_cap = bruto - investido
         liq = lucro_cap + div_total - (taxa * 2) - max(0, lucro_cap * 0.15 if lucro_cap > 0 else 0)
         rent_total = (liq / investido) * 100
         
-        # Drawdown (Queda Máxima)
-        cum_max = df['Close'].cummax()
-        drawdown = (df['Close'] - cum_max) / cum_max
+        # Drawdown
+        cum_max = precos_acao.cummax()
+        drawdown = (precos_acao - cum_max) / cum_max
         max_drawdown = drawdown.min() * 100
         
-        # Beta (Correlação com Ibov)
-        ret_acao = df['Close'].pct_change().dropna()
-        ret_ibov = ibov.pct_change().dropna()
-        # Sincroniza os índices para o cálculo do Beta
+        # Beta e Sharpe
+        ret_acao = precos_acao.pct_change().dropna()
+        ret_ibov = precos_ibov.pct_change().dropna()
         comum = ret_acao.index.intersection(ret_ibov.index)
         beta = np.polyfit(ret_ibov[comum], ret_acao[comum], 1)[0]
         
-        # Sharpe e Volatilidade
         vol = ret_acao.std() * np.sqrt(252) * 100
-        rent_ibov = ((ibov.iloc[-1] / ibov.iloc[0]) - 1) * 100
+        rent_ibov = ((precos_ibov.iloc[-1] / precos_ibov.iloc[0]) - 1) * 100
 
         # --- INTERFACE ---
         st.title(f"Intelligence Dashboard: {busca}")
         
-        # Status Insight
         if rent_total > rent_ibov:
-            st.markdown(f'<div class="status-card">🚀 <b>Alpha Positivo:</b> Sua estratégia superou o Ibovespa em {(rent_total - rent_ibov):.2f} pontos percentuais.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="status-card">🚀 <b>Alpha Positivo:</b> Superou o mercado em {(rent_total - rent_ibov):.2f}%.</div>', unsafe_allow_html=True)
         else:
-            st.markdown(f'<div class="status-card" style="border-left-color: #ea4335; background-color: #251a1a;">⚠️ <b>Underperformance:</b> O ativo rendeu menos que o índice de referência no período.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="status-card" style="border-left-color: #ea4335; background-color: #251a1a;">⚠️ <b>Underperformance:</b> Abaixo do índice de referência.</div>', unsafe_allow_html=True)
 
-        # Métricas Principais
         m1, m2, m3, m4 = st.columns(4)
         fmt = lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         m1.metric("Resultado Final", fmt(investido + liq), delta=f"{rent_total:.2f}%")
         m2.metric("Dividendos", fmt(div_total))
-        m3.metric("Max Drawdown", f"{max_drawdown:.2f}%", delta="Risco de Queda", delta_color="inverse")
-        m4.metric("Beta (vs Ibov)", f"{beta:.2d}")
+        m3.metric("Max Drawdown", f"{max_drawdown:.2f}%", delta_color="inverse")
+        m4.metric("Beta (vs Ibov)", f"{beta:.2f}")
 
-        # Gráficos
-        tab1, tab2 = st.tabs(["📊 Performance Comparada", "📉 Análise de Risco (Drawdown)"])
+        tab1, tab2 = st.tabs(["📊 Performance Comparada", "📉 Análise de Risco"])
         
         with tab1:
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df.index, y=(df['Close']/p_ini)*100, name=busca, line=dict(color='#34a853', width=3)))
-            fig.add_trace(go.Scatter(x=ibov.index, y=(ibov/ibov.iloc[0])*100, name="IBOVESPA", line=dict(color='#5f6368', dash='dot')))
-            fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', 
-                              margin=dict(l=0,r=0,t=10,b=0), xaxis=dict(fixedrange=True), yaxis=dict(side="right", fixedrange=True))
+            fig.add_trace(go.Scatter(x=precos_acao.index, y=(precos_acao/p_ini)*100, name=busca, line=dict(color='#34a853', width=3)))
+            fig.add_trace(go.Scatter(x=precos_ibov.index, y=(precos_ibov/precos_ibov.iloc[0])*100, name="IBOVESPA", line=dict(color='#5f6368', dash='dot')))
+            fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=10,b=0), xaxis=dict(fixedrange=True), yaxis=dict(side="right", fixedrange=True, ticksuffix="%"))
             st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
             fig_dd = go.Figure()
-            fig_dd.add_trace(go.Scatter(x=df.index, y=drawdown*100, fill='tozeroy', name="Drawdown", line=dict(color='#ea4335')))
-            fig_dd.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                                 margin=dict(l=0,r=0,t=10,b=0), yaxis=dict(side="right", ticksuffix="%", fixedrange=True), xaxis=dict(fixedrange=True))
+            fig_dd.add_trace(go.Scatter(x=drawdown.index, y=drawdown*100, fill='tozeroy', name="Drawdown", line=dict(color='#ea4335')))
+            fig_dd.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=10,b=0), yaxis=dict(side="right", ticksuffix="%", fixedrange=True), xaxis=dict(fixedrange=True))
             st.plotly_chart(fig_dd, use_container_width=True)
 
-        # Tabela de Proventos
-        with st.expander("📄 Ver histórico de dividendos detalhado"):
-            divs = df[df['Dividends'] > 0]['Dividends']
-            if not divs.empty:
-                st.dataframe(divs, use_container_width=True)
-            else:
-                st.write("Nenhum dividendo pago no período selecionado.")
-
 except Exception as e:
-    st.error(f"Erro técnico: {e}")
+    st.error(f"Erro técnico ao processar: {e}")
