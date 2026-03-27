@@ -1,61 +1,104 @@
-import openai # Você precisaria adicionar 'openai' ao requirements.txt
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import numpy as np
+import openai
 
-# --- NOVA SEÇÃO DE ANÁLISE COM IA ---
-st.divider()
-st.subheader("🤖 Análise Inteligente do Período (Beta)")
+# 1. Configurações de Página
+st.set_page_config(page_title="Simulador B3 Quant + IA", layout="wide", initial_sidebar_state="expanded")
 
-# Use st.secrets no Streamlit Cloud para gerenciar sua chave com segurança
-# Para testar localmente, você pode colocar a string diretamente (mas não suba pro GitHub assim!)
-# openai.api_key = st.secrets["OPENAI_API_KEY"] 
-openai.api_key = "SUA_CHAVE_API_DA_OPENAI_AQUI" 
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    .stApp { background-color: #0b0e11; color: #ffffff; }
+    [data-testid="stMetric"] { background-color: #15191c; padding: 20px; border-radius: 12px; border: 1px solid #2d3239; }
+    .status-card { padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 5px solid #34a853; background-color: #1a221b; }
+    </style>
+    """, unsafe_allow_html=True)
 
-if st.button("🧠 Solicitar Análise da IA sobre Movimentações"):
-    with st.spinner('A IA está lendo o gráfico e buscando notícias...'):
+# 2. Sidebar
+with st.sidebar:
+    st.header("Análise Quantitativa & IA")
+    busca = st.text_input("Ativo (Ex: PETR4, VALE3)", "PETR4").strip().upper()
+    ticker = f"{busca}.SA" if not busca.endswith(".SA") else busca
+    
+    st.divider()
+    data_compra = st.date_input("Início", value=pd.to_datetime("2023-01-01"), format="DD/MM/YYYY")
+    data_venda = st.date_input("Fim", value=datetime.now() - timedelta(days=1), format="DD/MM/YYYY")
+    
+    st.divider()
+    qtd = st.number_input("Quantidade", min_value=1, value=100)
+    api_key = st.text_input("Chave API OpenAI", type="password", help="Insira sua chave para habilitar a análise de IA")
+
+# 3. Processamento de Dados
+@st.cache_data(ttl=3600)
+def get_quant_data(ticker, start, end):
+    try:
+        stock = yf.Ticker(ticker)
+        df = stock.history(start=start, end=end)
+        ibov = yf.download("^BVSP", start=start, end=end, progress=False)
+        return df, ibov, stock.news
+    except:
+        return pd.DataFrame(), pd.DataFrame(), []
+
+try:
+    df, ibov, news = get_quant_data(ticker, data_compra, data_venda)
+
+    if not df.empty and len(df) >= 2:
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        if isinstance(ibov.columns, pd.MultiIndex): ibov.columns = ibov.columns.get_level_values(0)
+
+        precos_acao = df['Close'].dropna().squeeze()
+        precos_ibov = ibov['Close'].dropna().squeeze()
         
-        # 1. Coletar as Notícias via yfinance
-        try:
-            stock_context = yf.Ticker(ticker)
-            news = stock_context.news
-            # Pega as 5 notícias mais relevantes
-            headlines = [n['title'] for n in news[:5]]
-            news_text = "\n".join(headlines)
-        except:
-            news_text = "Não foi possível coletar notícias recentes para este ativo."
+        common_index = precos_acao.index.intersection(precos_ibov.index)
+        precos_acao = precos_acao.loc[common_index]
+        precos_ibov = precos_ibov.loc[common_index]
 
-        # 2. Preparar o contexto técnico
-        rendimento_texto = "positivo" if rent_total > 0 else "negativo"
-        data_ini_fmt = data_compra.strftime('%d/%m/%Y')
-        data_fim_fmt = data_venda.strftime('%d/%m/%Y')
+        p_ini, p_fim = float(precos_acao.iloc[0]), float(precos_acao.iloc[-1])
+        div_total = df['Dividends'].loc[common_index].sum() * qtd
+        rent_total = (((p_fim * qtd + div_total) / (p_ini * qtd)) - 1) * 100
+        rent_ibov = ((precos_ibov.iloc[-1] / precos_ibov.iloc[0]) - 1) * 100
 
-        # 3. Criar o Prompt para o GPT
-        prompt = f"""
-        Você é um analista financeiro sênior especializado na B3.
-        Analise a performance de {busca} entre {data_ini_fmt} e {data_fim_fmt}.
-        O ativo teve um rendimento líquido {rendimento_texto} de {rent_total:.2f}%.
-        O benchmark Ibovespa rendeu {rent_ibov:.2f}% no mesmo período.
-        O Drawdown Máximo foi de {max_drawdown:.2f}%.
+        # Interface
+        st.title(f"Intelligence Dashboard: {busca}")
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Resultado Final", f"R$ {(p_ini * qtd + (p_fim - p_ini) * qtd + div_total):,.2f}", delta=f"{rent_total:.2f}%")
+        m2.metric("Dividendos", f"R$ {div_total:,.2f}")
+        m3.metric("Benchmark Ibov", f"{rent_ibov:.2f}%")
 
-        Manchetes relevantes coletadas recentemente sobre o ativo:
-        {news_text}
+        # Gráfico
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=precos_acao.index, y=(precos_acao/p_ini)*100, name=busca, line=dict(color='#34a853', width=3)))
+        fig.add_trace(go.Scatter(x=precos_ibov.index, y=(precos_ibov/precos_ibov.iloc[0])*100, name="IBOVESPA", line=dict(color='#5f6368', dash='dot')))
+        fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=20,b=0), xaxis=dict(fixedrange=True), yaxis=dict(side="right", ticksuffix="%", fixedrange=True))
+        st.plotly_chart(fig, use_container_width=True)
 
-        Redija uma análise concisa (máximo 3 parágrafos) explicando os prováveis motivos técnicos e fundamentalistas para este comportamento de preço. Use linguagem profissional e direta. Se não houver notícias claras, baseie-se no comportamento técnico (volatilidade, tendência).
-        """
+        # SEÇÃO DE IA
+        st.divider()
+        st.subheader("🤖 Parecer do Analista IA")
+        
+        if api_key:
+            if st.button("Gerar Análise com IA"):
+                with st.spinner("Analisando notícias e fundamentos..."):
+                    try:
+                        client = openai.OpenAI(api_key=api_key)
+                        headlines = [n['title'] for n in news[:5]]
+                        prompt = f"Analise o ativo {busca}. Retorno: {rent_total:.2f}% vs Ibov: {rent_ibov:.2f}%. Notícias: {headlines}. Explique resumidamente o motivo da variação."
+                        
+                        response = client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        st.info(response.choices[0].message.content)
+                    except Exception as e:
+                        st.error(f"Erro na IA: {e}")
+        else:
+            st.warning("Insira sua Chave API na barra lateral para habilitar a análise de IA.")
 
-        # 4. Chamar a API da OpenAI (Usando modelo mais moderno/barato)
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo", # Ou "gpt-4-turbo" para análises muito melhores, mas mais caras
-                messages=[
-                    {"role": "system", "content": "Você é um assistente útil e especialista em finanças."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.5 # Controla a criatividade (0.5 é equilibrado para finanças)
-            )
-            
-            analise_ia = response.choices[0].message.content
-            
-            # 5. Exibir a análise
-            st.markdown(f'<div class="status-card" style="border-left-color: #1c83e1; background-color: #1a1e22;"><b>Parecer da IA:</b><br><br>{analise_ia}</div>', unsafe_allow_html=True)
-            
-        except Exception as e:
-            st.error(f"Erro ao chamar a IA: {e}")
+except Exception as e:
+    st.error(f"Erro ao processar: {e}")
