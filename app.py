@@ -5,14 +5,14 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import google.generativeai as genai
 
-# 1. CONFIGURAÇÃO DA CHAVE PADRÃO
-# Se o erro persistir, verifique sua chave no Google AI Studio
+# 1. CONFIGURAÇÃO DA CHAVE
 GOOGLE_API_KEY = "AIzaSyAsguDdDiNoiWYaJjWcFBuMErwIpBaEfxw"
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # 2. Configurações de Página
 st.set_page_config(page_title="Simulador B3 Ultra + Gemini", layout="wide")
 
+# Estilo Dark Customizado
 st.markdown("""
     <style>
     .stApp { background-color: #0b0e11; color: #ffffff; }
@@ -20,14 +20,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 3. Sidebar - Parâmetros de Simulação
+# 3. Sidebar
 with st.sidebar:
     st.header("Configurações")
     busca = st.text_input("Ativo (Ex: PETR4, VALE3)", "PETR4").strip().upper()
     ticker = f"{busca}.SA" if not busca.endswith(".SA") else busca
     
     st.divider()
-    # Data final padrão em D-2 para garantir fechamento de mercado
+    # Data final em D-2 para evitar erro de mercado aberto
     data_padrao_fim = datetime.now() - timedelta(days=2)
     data_compra = st.date_input("Data de Compra", value=pd.to_datetime("2023-01-01"))
     data_venda = st.date_input("Data de Venda", value=data_padrao_fim)
@@ -50,58 +50,48 @@ def get_market_data(t, start, end):
 
 df_acao, news = get_market_data(ticker, data_compra, data_venda)
 
-# 5. Validação e Dashboard
+# 5. Dashboard
 if df_acao.empty or len(df_acao) < 2:
-    st.warning("⚠️ Dados insuficientes. Tente mudar as datas ou o ativo.")
+    st.warning("⚠️ Dados insuficientes. Tente recuar a data de venda ou mudar o ativo.")
 else:
-    # Ajuste de Colunas MultiIndex
+    # Limpeza de colunas MultiIndex
     if isinstance(df_acao.columns, pd.MultiIndex): 
         df_acao.columns = df_acao.columns.get_level_values(0)
     
     precos = df_acao['Close'].dropna()
     p_ini, p_fim = float(precos.iloc[0]), float(precos.iloc[-1])
     
-    # Cálculos Financeiros (Quantidade e Taxas inclusas)
+    # Cálculos Financeiros
     investido = p_ini * qtd
     valor_final = p_fim * qtd
     dividendos = df_acao['Dividends'].sum() * qtd
     lucro_liquido = (valor_final - investido) + dividendos - (taxa * 2)
     rent_perc = (lucro_liquido / investido) * 100
 
-    # Layout de Métricas
-    st.title(f"Dashboard: {busca}")
+    st.title(f"Análise de Performance: {busca}")
+    
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Investido", f"R$ {investido:,.2f}")
     c2.metric("Dividendos", f"R$ {dividendos:,.2f}")
     c3.metric("Lucro Líquido", f"R$ {lucro_liquido:,.2f}", delta=f"{rent_perc:.2f}%")
 
-    # Gráfico de Performance
-    fig = go.Figure(go.Scatter(x=precos.index, y=precos, name="Preço", line=dict(color='#34a853', width=2)))
-    fig.update_layout(template="plotly_dark", height=450, margin=dict(l=0,r=0,t=20,b=0))
+    # Gráfico
+    fig = go.Figure(go.Scatter(x=precos.index, y=precos, name="Preço", line=dict(color='#34a853')))
+    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0,r=0,t=20,b=0))
     st.plotly_chart(fig, use_container_width=True)
 
-    # 6. IA GEMINI (Versão de Diagnóstico Final)
+    # 6. IA GEMINI (Versão Estável)
     st.divider()
     if st.button("✨ Gerar Insight com Gemini IA"):
-        with st.spinner("Analisando com a IA..."):
+        with st.spinner("Analisando mercado..."):
             try:
-                # Tentando o modelo padrão estável
+                # Usando o nome de modelo mais compatível
                 model = genai.GenerativeModel('gemini-1.5-flash')
                 
-                # Preparando o contexto
-                titulos = [n.get('title', 'Notícia') for n in news[:3]] if news else ["Sem notícias recentes."]
-                prompt = (f"Como um economista sênior, analise a performance da {busca}. "
-                         f"Rentabilidade de {rent_perc:.2f}% no período selecionado. "
-                         f"Notícias recentes: {titulos}. Explique os motivos dessa variação de forma concisa.")
+                contexto = [n.get('title', 'Notícia') for n in news[:3]] if news else ["Sem notícias."]
+                prompt = f"Analise o ativo {busca} com rentabilidade de {rent_perc:.2f}%. Notícias: {contexto}. Explique o motivo da variação."
                 
                 response = model.generate_content(prompt)
-                
-                if response.text:
-                    st.info(f"**Análise do Especialista Gemini:**\n\n{response.text}")
-                else:
-                    st.warning("A IA processou o pedido, mas não retornou texto (pode ser um filtro de segurança).")
-
+                st.info(f"**Insight da IA:**\n\n{response.text}")
             except Exception as e:
-                # Aqui ele vai imprimir o erro real se a chave falhar
-                st.error(f"Erro detalhado na conexão com a IA: {str(e)}")
-                st.write("Verifique se sua API Key no topo do código ainda é válida.")
+                st.error(f"Erro na IA: {str(e)}. Verifique se a biblioteca google-generativeai está no requirements.txt.")
