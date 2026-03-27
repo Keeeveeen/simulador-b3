@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import google.generativeai as genai
 
-# CONFIGURAÇÃO DA CHAVE PADRÃO
+# CONFIGURAÇÃO DA CHAVE PADRÃO (Sua chave do Google AI Studio)
 GOOGLE_API_KEY = "AIzaSyAsguDdDiNoiWYaJjWcFBuMErwIpBaEfxw"
 genai.configure(api_key=GOOGLE_API_KEY)
 
@@ -19,15 +19,15 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Sidebar
+# 2. Sidebar - Parâmetros de Simulação
 with st.sidebar:
     st.header("Configurações")
     busca = st.text_input("Ativo (Ex: PETR4, VALE3)", "PETR4").strip().upper()
     ticker = f"{busca}.SA" if not busca.endswith(".SA") else busca
     
     st.divider()
-    # Ajuste automático para evitar erros de dados do dia atual
-    data_max = datetime.now() - timedelta(days=1)
+    # Ajuste para garantir que a data final tenha dados (D-2)
+    data_max = datetime.now() - timedelta(days=2)
     data_compra = st.date_input("Data de Compra", value=pd.to_datetime("2023-01-01"))
     data_venda = st.date_input("Data de Venda", value=data_max)
     
@@ -36,11 +36,11 @@ with st.sidebar:
     taxa = st.number_input("Corretagem por Ordem (R$)", value=4.50)
 
 # 3. Coleta de Dados Blindada
+@st.cache_data(ttl=3600)
 def get_safe_data(t, start, end):
     try:
         s = yf.Ticker(t)
         d = s.history(start=start, end=end)
-        # Notícias são opcionais, se falhar o código segue
         try: n = s.news
         except: n = []
         return d, n
@@ -49,49 +49,65 @@ def get_safe_data(t, start, end):
 
 df_acao, news = get_safe_data(ticker, data_compra, data_venda)
 
-# 4. Validação e Renderização
+# 4. Validação e Renderização do Dashboard
 if df_acao.empty or len(df_acao) < 2:
-    st.warning("⚠️ Dados insuficientes no Yahoo Finance para este período. Tente mudar as datas.")
+    st.warning("⚠️ Dados insuficientes para este período ou ativo. Tente mudar as datas na lateral.")
 else:
-    # Correção de Colunas
+    # Correção de Colunas MultiIndex
     if isinstance(df_acao.columns, pd.MultiIndex): 
         df_acao.columns = df_acao.columns.get_level_values(0)
     
     precos = df_acao['Close'].dropna()
     p_ini, p_fim = float(precos.iloc[0]), float(precos.iloc[-1])
     
-    # Cálculos Financeiros
+    # Cálculos Financeiros Reais
     investido = p_ini * qtd
     valor_final_acao = p_fim * qtd
-    dividendos = df_acao['Dividends'].sum() * qtd
-    resultado = (valor_final_acao - investido) + dividendos - (taxa * 2)
-    rent_perc = (resultado / investido) * 100
+    dividendos_totais = df_acao['Dividends'].sum() * qtd
+    
+    lucro_prejuizo = (valor_final_acao - investido) + dividendos_totais - (taxa * 2)
+    rentabilidade_final = (lucro_prejuizo / investido) * 100
 
-    # Dashboard Principal
-    st.title(f"Dashboard de Trading: {busca}")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Investido", f"R$ {investido:,.2f}")
-    c2.metric("Dividendos", f"R$ {dividendos:,.2f}")
-    c3.metric("Lucro Líquido", f"R$ {resultado:,.2f}", delta=f"{rent_perc:.2f}%")
+    # Exibição das Métricas
+    st.title(f"Dashboard de Investimentos: {busca}")
+    col1, col2, col3 = st.columns(3)
+    
+    col1.metric("Total Investido", f"R$ {investido:,.2f}")
+    col2.metric("Dividendos Recebidos", f"R$ {dividendos_totais:,.2f}")
+    col3.metric("Resultado Líquido", f"R$ {lucro_prejuizo:,.2f}", delta=f"{rentabilidade_final:.2f}%")
 
     # Gráfico de Performance
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=precos.index, y=precos, name="Preço", line=dict(color='#34a853', width=2)))
-    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=20, b=10))
+    fig.add_trace(go.Scatter(x=precos.index, y=precos, name="Preço de Fechamento", line=dict(color='#34a853', width=2)))
+    fig.update_layout(
+        template="plotly_dark", 
+        height=450, 
+        margin=dict(l=10, r=10, t=30, b=10),
+        xaxis=dict(title="Período"),
+        yaxis=dict(title="Preço (R$)")
+    )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 5. IA GEMINI (Agora com a string corrigida)
+    # 5. IA GEMINI (Reparo do erro 404 e Fallback)
     st.divider()
     if st.button("✨ Gerar Insight com Gemini IA"):
-        with st.spinner("O Gemini está analisando os motivos do mercado..."):
+        with st.spinner("IA analisando fundamentos e notícias..."):
             try:
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                # Tentativa 1: Nome do modelo atualizado para evitar o erro 404
+                model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                
                 contexto_noticias = [n.get('title', 'Notícia sem título') for n in news[:3]] if news else ["Nenhuma notícia encontrada."]
                 
-                # STRING CORRIGIDA ABAIXO (Faltava fechar aspas ou quebra de linha)
-                prompt = f"Analise o ativo {busca}. Retorno: {rent_perc:.2f}%. Notícias: {contexto_noticias}. Como economista, explique brevemente o porquê dessa variação."
+                prompt = f"Analise o ativo {busca}. Rentabilidade no período: {rentabilidade_final:.2f}%. Notícias: {contexto_noticias}. Como um economista, explique brevemente o que causou esse desempenho."
                 
                 response = model.generate_content(prompt)
                 st.info(response.text)
+                
             except Exception as e:
-                st.error(f"Erro na IA: {str(e)}")
+                # Tentativa 2: Fallback para o modelo Pro caso o Flash ainda apresente problemas
+                try:
+                    model_backup = genai.GenerativeModel('gemini-pro')
+                    response = model_backup.generate_content(prompt)
+                    st.info(response.text)
+                except:
+                    st.error(f"Erro técnico na IA: {str(e)}. Verifique se sua chave API está ativa no Google AI Studio.")
