@@ -5,13 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-import ta  # Technical Analysis library
 from datetime import datetime, timedelta
-import requests
-from PIL import Image
-import io
-import base64
-from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -57,7 +51,65 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== FUNÇÕES AVANÇADAS ====================
+# ==================== FUNÇÕES DE INDICADORES TÉCNICOS MANUAIS ====================
+
+def calculate_sma(data, window):
+    """Calcula Média Móvel Simples"""
+    return data.rolling(window=window).mean()
+
+def calculate_ema(data, window):
+    """Calcula Média Móvel Exponencial"""
+    return data.ewm(span=window, adjust=False).mean()
+
+def calculate_rsi(data, window=14):
+    """Calcula RSI (Relative Strength Index)"""
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    """Calcula MACD"""
+    ema_fast = calculate_ema(data, fast)
+    ema_slow = calculate_ema(data, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = calculate_ema(macd_line, signal)
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+def calculate_bollinger_bands(data, window=20, num_std=2):
+    """Calcula Bandas de Bollinger"""
+    sma = calculate_sma(data, window)
+    std = data.rolling(window=window).std()
+    upper_band = sma + (std * num_std)
+    lower_band = sma - (std * num_std)
+    return upper_band, sma, lower_band
+
+def calculate_stochastic(high, low, close, k_window=14, d_window=3):
+    """Calcula Oscilador Estocástico"""
+    lowest_low = low.rolling(window=k_window).min()
+    highest_high = high.rolling(window=k_window).max()
+    k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+    d = k.rolling(window=d_window).mean()
+    return k, d
+
+def calculate_atr(high, low, close, window=14):
+    """Calcula Average True Range"""
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=window).mean()
+    return atr
+
+def calculate_obv(close, volume):
+    """Calcula On-Balance Volume"""
+    obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+    return obv
+
+# ==================== CLASSE PRINCIPAL ====================
 
 class WealthAnalyzer:
     """Classe principal para análise de investimentos"""
@@ -83,36 +135,42 @@ class WealthAnalyzer:
     def calculate_indicators(self):
         """Calcula indicadores técnicos"""
         close = self.data['Close'] if 'Close' in self.data.columns else self.data['Adj Close']
+        high = self.data['High']
+        low = self.data['Low']
+        volume = self.data['Volume'] if 'Volume' in self.data.columns else pd.Series(index=self.data.index)
         
         # Médias Móveis
-        self.data['SMA_20'] = ta.trend.sma_indicator(close, window=20)
-        self.data['SMA_50'] = ta.trend.sma_indicator(close, window=50)
-        self.data['EMA_12'] = ta.trend.ema_indicator(close, window=12)
-        self.data['EMA_26'] = ta.trend.ema_indicator(close, window=26)
+        self.data['SMA_20'] = calculate_sma(close, 20)
+        self.data['SMA_50'] = calculate_sma(close, 50)
+        self.data['EMA_12'] = calculate_ema(close, 12)
+        self.data['EMA_26'] = calculate_ema(close, 26)
         
         # MACD
-        macd = ta.trend.MACD(close)
-        self.data['MACD'] = macd.macd()
-        self.data['MACD_Signal'] = macd.macd_signal()
-        self.data['MACD_Hist'] = macd.macd_diff()
+        macd, signal, hist = calculate_macd(close)
+        self.data['MACD'] = macd
+        self.data['MACD_Signal'] = signal
+        self.data['MACD_Hist'] = hist
         
         # RSI
-        self.data['RSI'] = ta.momentum.RSIIndicator(close, window=14).rsi()
+        self.data['RSI'] = calculate_rsi(close)
         
         # Bandas de Bollinger
-        bb = ta.volatility.BollingerBands(close, window=20, window_dev=2)
-        self.data['BB_Upper'] = bb.bollinger_hband()
-        self.data['BB_Middle'] = bb.bollinger_mavg()
-        self.data['BB_Lower'] = bb.bollinger_lband()
-        
-        # Volume
-        if 'Volume' in self.data.columns:
-            self.data['Volume_SMA'] = ta.trend.sma_indicator(self.data['Volume'], window=20)
+        upper, middle, lower = calculate_bollinger_bands(close)
+        self.data['BB_Upper'] = upper
+        self.data['BB_Middle'] = middle
+        self.data['BB_Lower'] = lower
         
         # Stochastic
-        stoch = ta.momentum.StochasticOscillator(close, self.data['High'], self.data['Low'])
-        self.data['Stoch_K'] = stoch.stoch()
-        self.data['Stoch_D'] = stoch.stoch_signal()
+        k, d = calculate_stochastic(high, low, close)
+        self.data['Stoch_K'] = k
+        self.data['Stoch_D'] = d
+        
+        # ATR
+        self.data['ATR'] = calculate_atr(high, low, close)
+        
+        # OBV
+        if 'Volume' in self.data.columns:
+            self.data['OBV'] = calculate_obv(close, volume)
     
     def get_technical_signals(self):
         """Gera sinais técnicos combinados"""
@@ -122,24 +180,34 @@ class WealthAnalyzer:
         
         # RSI
         if last_row['RSI'] < 30:
-            signals.append(("📈 RSI", "Sobrevendido (Compra)", "success-text"))
+            signals.append(("📈 RSI", "Sobrevendido (Sinal de Compra)", "success-text"))
         elif last_row['RSI'] > 70:
-            signals.append(("📉 RSI", "Sobrecomprado (Venda)", "warning-text"))
+            signals.append(("📉 RSI", "Sobrecomprado (Sinal de Venda)", "warning-text"))
         else:
-            signals.append(("⚖️ RSI", "Neutro", "info-text"))
+            signals.append(("⚖️ RSI", f"Neutro ({last_row['RSI']:.1f})", "info-text"))
         
         # MACD
         if last_row['MACD'] > last_row['MACD_Signal'] and prev_row['MACD'] <= prev_row['MACD_Signal']:
             signals.append(("🟢 MACD", "Cruzamento de Alta", "success-text"))
         elif last_row['MACD'] < last_row['MACD_Signal'] and prev_row['MACD'] >= prev_row['MACD_Signal']:
             signals.append(("🔴 MACD", "Cruzamento de Baixa", "warning-text"))
+        else:
+            signals.append(("⚖️ MACD", "Neutro", "info-text"))
         
         # Bandas de Bollinger
         close = last_row['Close'] if 'Close' in last_row.index else last_row['Adj Close']
         if close <= last_row['BB_Lower']:
-            signals.append(("📊 Bollinger", "Preço na banda inferior (Compra)", "success-text"))
+            signals.append(("📊 Bollinger", "Preço na banda inferior (Potencial Compra)", "success-text"))
         elif close >= last_row['BB_Upper']:
-            signals.append(("📊 Bollinger", "Preço na banda superior (Venda)", "warning-text"))
+            signals.append(("📊 Bollinger", "Preço na banda superior (Potencial Venda)", "warning-text"))
+        else:
+            signals.append(("⚖️ Bollinger", "Preço na faixa neutra", "info-text"))
+        
+        # Stochastic
+        if last_row['Stoch_K'] < 20 and last_row['Stoch_D'] < 20:
+            signals.append(("🎯 Stochastic", "Sobrevendido (Sinal de Compra)", "success-text"))
+        elif last_row['Stoch_K'] > 80 and last_row['Stoch_D'] > 80:
+            signals.append(("🎯 Stochastic", "Sobrecomprado (Sinal de Venda)", "warning-text"))
         
         return signals
     
@@ -147,14 +215,31 @@ class WealthAnalyzer:
         """Calcula métricas de risco"""
         returns = self.data['Close'].pct_change().dropna()
         
+        # Volatilidade anualizada
+        volatility = returns.std() * np.sqrt(252)
+        
+        # Sharpe Ratio (assumindo taxa livre de risco de 0%)
+        sharpe = (returns.mean() * 252) / (returns.std() * np.sqrt(252)) if returns.std() > 0 else 0
+        
+        # Drawdown máximo
+        cumulative = (1 + returns).cumprod()
+        rolling_max = cumulative.expanding().max()
+        drawdown = (cumulative - rolling_max) / rolling_max
+        max_drawdown = drawdown.min()
+        
+        # VaR 95%
+        var_95 = np.percentile(returns, 5)
+        
+        # CVaR 95%
+        cvar_95 = returns[returns <= var_95].mean() if len(returns[returns <= var_95]) > 0 else var_95
+        
         metrics = {
-            'Volatilidade': returns.std() * np.sqrt(252),
-            'Sharpe Ratio': (returns.mean() * 252) / (returns.std() * np.sqrt(252)),
-            'Drawdown Máximo': (self.data['Close'] / self.data['Close'].cummax() - 1).min(),
-            'VaR 95%': np.percentile(returns, 5),
-            'CVaR 95%': returns[returns <= np.percentile(returns, 5)].mean(),
-            'Skewness': returns.skew(),
-            'Kurtosis': returns.kurtosis(),
+            'Volatilidade (Anual)': f"{volatility*100:.2f}%",
+            'Sharpe Ratio': f"{sharpe:.2f}",
+            'Drawdown Máximo': f"{max_drawdown*100:.2f}%",
+            'VaR 95% (Diário)': f"{var_95*100:.2f}%",
+            'CVaR 95% (Diário)': f"{cvar_95*100:.2f}%",
+            'Retorno Médio Diário': f"{returns.mean()*100:.3f}%",
         }
         return metrics
     
@@ -167,7 +252,7 @@ class WealthAnalyzer:
         sigma = returns.std()
         
         simulations_df = pd.DataFrame()
-        for i in range(simulations):
+        for i in range(min(simulations, 500)):  # Limite de 500 simulações para performance
             daily_returns = np.random.normal(mu, sigma, days)
             price_path = last_price * (1 + daily_returns).cumprod()
             simulations_df[i] = price_path
@@ -188,8 +273,22 @@ class WealthAnalyzer:
                 'Dividend Yield': info.get('dividendYield', 'N/A'),
                 'Market Cap': info.get('marketCap', 'N/A'),
                 'Setor': info.get('sector', 'N/A'),
-                'Website': info.get('website', 'N/A'),
             }
+            
+            # Formatar valores
+            for key, value in fundamentals.items():
+                if value != 'N/A' and isinstance(value, (int, float)):
+                    if key == 'Dividend Yield':
+                        fundamentals[key] = f"{value*100:.2f}%"
+                    elif key == 'Margem Líquida':
+                        fundamentals[key] = f"{value*100:.2f}%"
+                    elif key == 'ROE':
+                        fundamentals[key] = f"{value*100:.2f}%"
+                    elif key == 'Market Cap':
+                        fundamentals[key] = f"R$ {value/1e9:.2f}B"
+                    elif key in ['P/L', 'P/VP']:
+                        fundamentals[key] = f"{value:.2f}"
+            
             return fundamentals
         except:
             return {}
@@ -254,7 +353,8 @@ def main():
                 with col1:
                     st.metric("Preço Atual", f"R$ {current_price:.2f}", f"{price_change:+.2f}%")
                 with col2:
-                    st.metric("Volume Médio", f"{analyzer.data['Volume'].mean():,.0f}")
+                    volume_medio = analyzer.data['Volume'].mean() if 'Volume' in analyzer.data.columns else 0
+                    st.metric("Volume Médio", f"{volume_medio:,.0f}")
                 with col3:
                     high_52w = analyzer.data['Close'].max()
                     st.metric("Máxima 52 semanas", f"R$ {high_52w:.2f}")
@@ -296,14 +396,15 @@ def main():
                 ), row=1, col=1)
                 
                 # Volume
-                colors = ['red' if close < open else 'green' 
-                          for close, open in zip(analyzer.data['Close'], analyzer.data['Open'])]
-                fig.add_trace(go.Bar(
-                    x=analyzer.data.index,
-                    y=analyzer.data['Volume'],
-                    marker_color=colors,
-                    name="Volume"
-                ), row=2, col=1)
+                if 'Volume' in analyzer.data.columns:
+                    colors = ['red' if close < open else 'green' 
+                              for close, open in zip(analyzer.data['Close'], analyzer.data['Open'])]
+                    fig.add_trace(go.Bar(
+                        x=analyzer.data.index,
+                        y=analyzer.data['Volume'],
+                        marker_color=colors,
+                        name="Volume"
+                    ), row=2, col=1)
                 
                 fig.update_layout(
                     title="Análise Técnica Avançada",
@@ -331,22 +432,22 @@ def main():
                             """, unsafe_allow_html=True)
                     
                     # Indicadores adicionais
-                    st.markdown("#### 📊 Indicadores")
+                    st.markdown("#### 📊 Indicadores Técnicos")
                     col1, col2 = st.columns(2)
                     
                     with col1:
                         fig_rsi = go.Figure()
-                        fig_rsi.add_trace(go.Scatter(x=analyzer.data.index, y=analyzer.data['RSI'], name="RSI"))
-                        fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
-                        fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
+                        fig_rsi.add_trace(go.Scatter(x=analyzer.data.index, y=analyzer.data['RSI'], name="RSI", line=dict(color='#00ff88')))
+                        fig_rsi.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="Sobrecomprado")
+                        fig_rsi.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="Sobrevendido")
                         fig_rsi.update_layout(title="RSI (14 períodos)", template="plotly_dark", height=300)
                         st.plotly_chart(fig_rsi, use_container_width=True)
                     
                     with col2:
                         fig_macd = go.Figure()
-                        fig_macd.add_trace(go.Scatter(x=analyzer.data.index, y=analyzer.data['MACD'], name="MACD"))
-                        fig_macd.add_trace(go.Scatter(x=analyzer.data.index, y=analyzer.data['MACD_Signal'], name="Sinal"))
-                        fig_macd.add_bar(x=analyzer.data.index, y=analyzer.data['MACD_Hist'], name="Histograma")
+                        fig_macd.add_trace(go.Scatter(x=analyzer.data.index, y=analyzer.data['MACD'], name="MACD", line=dict(color='#00ff88')))
+                        fig_macd.add_trace(go.Scatter(x=analyzer.data.index, y=analyzer.data['MACD_Signal'], name="Sinal", line=dict(color='orange')))
+                        fig_macd.add_bar(x=analyzer.data.index, y=analyzer.data['MACD_Hist'], name="Histograma", marker_color='gray')
                         fig_macd.update_layout(title="MACD", template="plotly_dark", height=300)
                         st.plotly_chart(fig_macd, use_container_width=True)
                 
@@ -359,17 +460,6 @@ def main():
                         cols = st.columns(4)
                         for idx, (key, value) in enumerate(fundamentals.items()):
                             with cols[idx % 4]:
-                                if value != 'N/A' and isinstance(value, (int, float)):
-                                    if key == 'Dividend Yield' and value:
-                                        value = f"{value*100:.2f}%"
-                                    elif key == 'Margem Líquida' and value:
-                                        value = f"{value*100:.2f}%"
-                                    elif key == 'ROE' and value:
-                                        value = f"{value*100:.2f}%"
-                                    elif key == 'Market Cap' and value != 'N/A':
-                                        value = f"R$ {value/1e9:.2f}B"
-                                    else:
-                                        value = f"{value:.2f}"
                                 st.metric(key, value)
                     else:
                         st.info("Dados fundamentalistas não disponíveis para este ativo")
@@ -379,19 +469,9 @@ def main():
                     st.markdown("### ⚠️ Métricas de Risco")
                     risk_metrics = analyzer.calculate_risk_metrics()
                     
-                    cols = st.columns(4)
+                    cols = st.columns(3)
                     for idx, (key, value) in enumerate(risk_metrics.items()):
-                        with cols[idx % 4]:
-                            if key == 'Volatilidade':
-                                value = f"{value*100:.2f}%"
-                            elif key == 'Sharpe Ratio':
-                                value = f"{value:.2f}"
-                            elif key == 'Drawdown Máximo':
-                                value = f"{value*100:.2f}%"
-                            elif key == 'VaR 95%':
-                                value = f"{value*100:.2f}%"
-                            elif key == 'CVaR 95%':
-                                value = f"{value*100:.2f}%"
+                        with cols[idx % 3]:
                             st.metric(key, value)
                     
                     # Gráfico de Drawdown
@@ -402,7 +482,8 @@ def main():
                     
                     fig_dd = go.Figure()
                     fig_dd.add_trace(go.Scatter(x=analyzer.data.index, y=drawdown*100, 
-                                                fill='tozeroy', name="Drawdown"))
+                                                fill='tozeroy', name="Drawdown",
+                                                line=dict(color='red', width=2)))
                     fig_dd.update_layout(title="Drawdown Histórico (%)", template="plotly_dark", height=300)
                     st.plotly_chart(fig_dd, use_container_width=True)
                 
@@ -410,70 +491,90 @@ def main():
                 if show_monte_carlo:
                     st.markdown("### 🎲 Simulação de Monte Carlo")
                     
-                    simulations = analyzer.monte_carlo_simulation(days=252, simulations=500)
-                    
-                    # Estatísticas da simulação
-                    final_prices = simulations.iloc[-1]
-                    percentiles = np.percentile(final_prices, [5, 50, 95])
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Cenário Pessimista (5%)", f"R$ {percentiles[0]:.2f}")
-                    with col2:
-                        st.metric("Cenário Base (50%)", f"R$ {percentiles[1]:.2f}")
-                    with col3:
-                        st.metric("Cenário Otimista (95%)", f"R$ {percentiles[2]:.2f}")
-                    
-                    # Gráfico das simulações
-                    fig_mc = go.Figure()
-                    
-                    # Amostra de algumas simulações
-                    for i in range(min(100, simulations.shape[1])):
-                        fig_mc.add_trace(go.Scatter(
-                            x=simulations.index,
-                            y=simulations[i],
-                            mode='lines',
-                            line=dict(width=0.5, color='rgba(100, 100, 100, 0.3)'),
-                            showlegend=False
-                        ))
-                    
-                    # Percentis
-                    fig_mc.add_trace(go.Scatter(
-                        x=simulations.index,
-                        y=np.percentile(simulations, 95, axis=1),
-                        mode='lines',
-                        line=dict(color='green', width=2),
-                        name='Percentil 95%'
-                    ))
-                    
-                    fig_mc.add_trace(go.Scatter(
-                        x=simulations.index,
-                        y=np.percentile(simulations, 5, axis=1),
-                        mode='lines',
-                        line=dict(color='red', width=2),
-                        name='Percentil 5%',
-                        fill='tonexty'
-                    ))
-                    
-                    fig_mc.update_layout(
-                        title="Simulação de Monte Carlo - 500 Cenários",
-                        template="plotly_dark",
-                        height=500,
-                        xaxis_title="Dias à frente",
-                        yaxis_title="Preço (R$)"
-                    )
-                    
-                    st.plotly_chart(fig_mc, use_container_width=True)
+                    with st.spinner("Executando simulações..."):
+                        simulations = analyzer.monte_carlo_simulation(days=252, simulations=500)
+                        
+                        if not simulations.empty:
+                            # Estatísticas da simulação
+                            final_prices = simulations.iloc[-1]
+                            percentiles = np.percentile(final_prices, [5, 50, 95])
+                            
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Cenário Pessimista (5%)", f"R$ {percentiles[0]:.2f}")
+                            with col2:
+                                st.metric("Cenário Base (50%)", f"R$ {percentiles[1]:.2f}")
+                            with col3:
+                                st.metric("Cenário Otimista (95%)", f"R$ {percentiles[2]:.2f}")
+                            
+                            # Gráfico das simulações
+                            fig_mc = go.Figure()
+                            
+                            # Amostra de algumas simulações
+                            for i in range(min(100, simulations.shape[1])):
+                                fig_mc.add_trace(go.Scatter(
+                                    x=simulations.index,
+                                    y=simulations[i],
+                                    mode='lines',
+                                    line=dict(width=0.5, color='rgba(100, 100, 100, 0.3)'),
+                                    showlegend=False
+                                ))
+                            
+                            # Percentis
+                            fig_mc.add_trace(go.Scatter(
+                                x=simulations.index,
+                                y=np.percentile(simulations, 95, axis=1),
+                                mode='lines',
+                                line=dict(color='green', width=2),
+                                name='Percentil 95%'
+                            ))
+                            
+                            fig_mc.add_trace(go.Scatter(
+                                x=simulations.index,
+                                y=np.percentile(simulations, 5, axis=1),
+                                mode='lines',
+                                line=dict(color='red', width=2),
+                                name='Percentil 5%',
+                                fill='tonexty'
+                            ))
+                            
+                            fig_mc.update_layout(
+                                title="Simulação de Monte Carlo - 500 Cenários",
+                                template="plotly_dark",
+                                height=500,
+                                xaxis_title="Dias à frente",
+                                yaxis_title="Preço (R$)"
+                            )
+                            
+                            st.plotly_chart(fig_mc, use_container_width=True)
+                            
+                            # Probabilidades
+                            current_price = analyzer.data['Close'].iloc[-1]
+                            prob_up = (final_prices > current_price).mean() * 100
+                            prob_down = (final_prices < current_price).mean() * 100
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("Probabilidade de Alta", f"{prob_up:.1f}%")
+                            with col2:
+                                st.metric("Probabilidade de Baixa", f"{prob_down:.1f}%")
+                        else:
+                            st.warning("Não foi possível realizar a simulação")
                 
                 # ==================== PROJEÇÃO DE PATRIMÔNIO ====================
                 st.markdown("### 💰 Projeção de Patrimônio")
                 
                 months = 60  # 5 anos
-                monthly_return = analyzer.data['Close'].pct_change().mean() * 21  # Retorno mensal médio
+                # Retorno mensal médio
+                daily_returns = analyzer.data['Close'].pct_change().dropna()
+                monthly_return = (1 + daily_returns).prod() ** (21/len(daily_returns)) - 1 if len(daily_returns) > 0 else 0.01
                 
                 patrimony = [investment]
+                aportes_acumulados = [investment]
+                
                 for i in range(months):
                     patrimony.append(patrimony[-1] * (1 + monthly_return) + monthly_contribution)
+                    aportes_acumulados.append(aportes_acumulados[-1] + monthly_contribution)
                 
                 fig_proj = go.Figure()
                 fig_proj.add_trace(go.Scatter(
@@ -485,15 +586,35 @@ def main():
                     marker=dict(size=4)
                 ))
                 
+                fig_proj.add_trace(go.Scatter(
+                    x=list(range(months + 1)),
+                    y=aportes_acumulados,
+                    mode='lines',
+                    name='Total Aportado',
+                    line=dict(color='orange', width=2, dash='dash')
+                ))
+                
                 fig_proj.update_layout(
-                    title=f"Projeção de {months//12} anos com aportes mensais",
+                    title=f"Projeção de {months//12} anos com aportes mensais de R$ {monthly_contribution:,.2f}",
                     template="plotly_dark",
                     height=400,
                     xaxis_title="Meses",
-                    yaxis_title="Patrimônio (R$)"
+                    yaxis_title="Valor (R$)"
                 )
                 
                 st.plotly_chart(fig_proj, use_container_width=True)
+                
+                # Lucro projetado
+                lucro_projetado = patrimony[-1] - aportes_acumulados[-1]
+                rentabilidade_projetada = (patrimony[-1] / aportes_acumulados[-1] - 1) * 100
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Patrimônio Final", f"R$ {patrimony[-1]:,.2f}")
+                with col2:
+                    st.metric("Total Aportado", f"R$ {aportes_acumulados[-1]:,.2f}")
+                with col3:
+                    st.metric("Lucro Projetado", f"R$ {lucro_projetado:,.2f}", f"{rentabilidade_projetada:.1f}%")
                 
                 # ==================== COMPARADOR DE ATIVOS ====================
                 st.markdown("### 🔄 Comparador de Ativos")
@@ -531,6 +652,37 @@ def main():
                     )
                     
                     st.plotly_chart(fig_comp, use_container_width=True)
+                
+                # ==================== ESTATÍSTICAS ADICIONAIS ====================
+                with st.expander("📊 Estatísticas Avançadas"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Distribuição dos Retornos**")
+                        returns = analyzer.data['Close'].pct_change().dropna() * 100
+                        
+                        fig_hist = go.Figure()
+                        fig_hist.add_trace(go.Histogram(x=returns, nbinsx=50, name="Retornos"))
+                        fig_hist.update_layout(
+                            title="Histograma de Retornos Diários (%)",
+                            template="plotly_dark",
+                            height=300
+                        )
+                        st.plotly_chart(fig_hist, use_container_width=True)
+                    
+                    with col2:
+                        st.markdown("**Estatísticas Descritivas**")
+                        stats_df = pd.DataFrame({
+                            'Métrica': ['Média', 'Mediana', 'Desvio Padrão', 'Mínimo', 'Máximo'],
+                            'Valor': [
+                                f"{returns.mean():.3f}%",
+                                f"{returns.median():.3f}%",
+                                f"{returns.std():.3f}%",
+                                f"{returns.min():.3f}%",
+                                f"{returns.max():.3f}%"
+                            ]
+                        })
+                        st.dataframe(stats_df, use_container_width=True)
                 
             else:
                 st.error("Não foi possível carregar os dados do ativo. Verifique o ticker informado.")
