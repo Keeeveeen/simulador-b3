@@ -25,7 +25,6 @@ def baixar_dados(tickers, inicio, fim):
     if df.empty:
         raise ValueError("Nenhum dado retornado.")
 
-    # MULTI ATIVOS
     if isinstance(df.columns, pd.MultiIndex):
         niveis = df.columns.get_level_values(0)
 
@@ -36,7 +35,6 @@ def baixar_dados(tickers, inicio, fim):
         else:
             raise KeyError("Sem coluna de preço válida.")
 
-    # UM ATIVO
     else:
         if "Adj Close" in df.columns:
             df = df[["Adj Close"]]
@@ -45,29 +43,46 @@ def baixar_dados(tickers, inicio, fim):
         else:
             raise KeyError("Sem coluna de preço válida.")
 
-        # padroniza nome da coluna
         df.columns = [tickers[0]]
 
     return df.dropna(how="all")
 
 
-def calcular_carteira(dados, aporte_mensal):
-    datas_aporte = dados.resample("M").first().index
+def calcular_carteira(dados, aporte_mensal, investimento_inicial, modo):
+    cotas = pd.DataFrame(0, index=dados.index, columns=dados.columns)
 
-    cotas = pd.DataFrame(index=dados.index, columns=dados.columns)
+    # =========================
+    # INVESTIMENTO INICIAL
+    # =========================
+    if modo in ["Apenas inicial", "Inicial + mensal"]:
+        primeira_data = dados.index[0]
 
-    for col in dados.columns:
-        cotas[col] = 0
+        for col in dados.columns:
+            cotas.loc[primeira_data, col] += (
+                investimento_inicial / len(dados.columns)
+            ) / dados.loc[primeira_data, col]
 
-    for data in datas_aporte:
-        if data in dados.index:
-            for col in dados.columns:
-                cotas.loc[data, col] += aporte_mensal / len(dados.columns) / dados.loc[data, col]
+    # =========================
+    # APORTES MENSAIS
+    # =========================
+    if modo in ["Aporte mensal", "Inicial + mensal"]:
+        datas_aporte = dados.resample("M").first().index
+
+        for data in datas_aporte:
+            if data in dados.index:
+                for col in dados.columns:
+                    cotas.loc[data, col] += (
+                        aporte_mensal / len(dados.columns)
+                    ) / dados.loc[data, col]
+
+        n_aportes = len(datas_aporte)
+    else:
+        n_aportes = 0
 
     cotas_acum = cotas.cumsum()
     carteira = (cotas_acum * dados).sum(axis=1)
 
-    return carteira, len(datas_aporte)
+    return carteira, n_aportes
 
 
 def calcular_metricas(retornos):
@@ -95,7 +110,20 @@ ativos_input = st.sidebar.text_input(
 inicio = st.sidebar.date_input("Data início", datetime(2023, 1, 1))
 fim = st.sidebar.date_input("Data fim", datetime.today())
 
-aporte_mensal = st.sidebar.number_input("Aporte mensal (R$)", value=1000.0)
+modo = st.sidebar.selectbox(
+    "Tipo de investimento",
+    ["Apenas inicial", "Aporte mensal", "Inicial + mensal"]
+)
+
+investimento_inicial = st.sidebar.number_input(
+    "Investimento inicial (R$)",
+    value=10000.0
+)
+
+aporte_mensal = st.sidebar.number_input(
+    "Aporte mensal (R$)",
+    value=1000.0
+)
 
 csv_file = st.sidebar.file_uploader("Upload carteira CSV", type=["csv"])
 
@@ -110,9 +138,8 @@ try:
     else:
         ativos = [tratar_ticker(x) for x in ativos_input.split(",")]
 
-    ativos = list(set(ativos))  # remove duplicados
+    ativos = list(set(ativos))
 
-    # adiciona IBOV se não existir
     if "^BVSP" not in ativos:
         ativos.append("^BVSP")
 
@@ -120,7 +147,6 @@ except Exception:
     st.error("Erro ao ler ativos.")
     st.stop()
 
-# valida datas
 if inicio >= fim:
     st.error("Data inicial deve ser menor que final.")
     st.stop()
@@ -139,7 +165,7 @@ if dados.empty:
     st.error("Sem dados disponíveis.")
     st.stop()
 
-# separa IBOV com segurança
+# separa IBOV
 if "^BVSP" in dados.columns:
     ibov = dados["^BVSP"]
     dados = dados.drop(columns="^BVSP")
@@ -153,10 +179,15 @@ if dados.empty:
     st.stop()
 
 # =========================
-# CARTEIRA (DCA)
+# CARTEIRA
 # =========================
 
-carteira, n_aportes = calcular_carteira(dados, aporte_mensal)
+carteira, n_aportes = calcular_carteira(
+    dados,
+    aporte_mensal,
+    investimento_inicial,
+    modo
+)
 
 # =========================
 # MÉTRICAS
@@ -165,10 +196,16 @@ carteira, n_aportes = calcular_carteira(dados, aporte_mensal)
 retornos = carteira.pct_change().dropna()
 ret_medio, vol, sharpe = calcular_metricas(retornos)
 
-investido = aporte_mensal * n_aportes
+investido = 0
+
+if modo in ["Apenas inicial", "Inicial + mensal"]:
+    investido += investimento_inicial
+
+if modo in ["Aporte mensal", "Inicial + mensal"]:
+    investido += aporte_mensal * n_aportes
+
 valor_final = carteira.iloc[-1]
 lucro = valor_final - investido
-
 ir = lucro * 0.15 if lucro > 0 else 0
 
 # =========================
@@ -215,12 +252,12 @@ fig.update_layout(template="plotly_dark", title="Performance")
 st.plotly_chart(fig, use_container_width=True)
 
 # =========================
-# DEBUG OPCIONAL
+# DEBUG
 # =========================
 
 with st.expander("🔍 Debug"):
     st.write("Ativos:", ativos)
-    st.write("Colunas dados:", dados.columns)
+    st.write("Colunas:", dados.columns)
 
 # =========================
 # TABELA
