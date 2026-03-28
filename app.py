@@ -1,143 +1,157 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 
-# =========================
-# CONFIGURAÇÃO DA PÁGINA
-# =========================
-st.set_page_config(page_title="Simulador B3 Pro", layout="wide")
+st.set_page_config(page_title="Simulador B3 PRO MAX", layout="wide")
 
 # =========================
 # FUNÇÕES
 # =========================
 
-def tratar_ticker(nome: str) -> str:
-    nome = nome.upper().strip()
-
-    de_para = {
-        "ITAU": "ITUB4", "ITAÚ": "ITUB4", "SANTANDER": "SANB11",
-        "INTER": "INTR", "BANCO INTER": "INTR", "BRADESCO": "BBDC4",
-        "BANCO DO BRASIL": "BBAS3", "BB": "BBAS3", "NUBANK": "ROXO34",
-        "BTG": "BPAC11", "XP": "XPBR31", "ITAUSA": "ITSA4", "ITAÚSA": "ITSA4",
-        "MAGALU": "MGLU3", "MAGAZINE LUIZA": "MGLU3", "CASAS BAHIA": "BHIA3",
-        "PETROBRAS": "PETR4", "PETROBRÁS": "PETR4", "VALE": "VALE3",
-        "WEG": "WEGE3", "SUZANO": "SUZB3", "GERDAU": "GGBR4",
-        "ELETROBRAS": "ELET3", "ELETROBRÁS": "ELET3", "TAESA": "TAEE11"
-    }
-
-    ticker = de_para.get(nome, nome)
-
-    if not ticker.endswith(".SA") and not ticker.endswith("34"):
-        ticker += ".SA"
-
-    return ticker
+def tratar_ticker(t):
+    t = t.upper().strip()
+    if not t.endswith(".SA") and t != "^BVSP":
+        t += ".SA"
+    return t
 
 
 @st.cache_data
-def buscar_dados(ticker, inicio, fim):
-    df = yf.download(ticker, start=inicio, end=fim, progress=False)
-    if df.empty:
-        raise ValueError("Nenhum dado encontrado.")
-    return df
+def baixar_dados(tickers, inicio, fim):
+    dados = yf.download(tickers, start=inicio, end=fim, progress=False)["Adj Close"]
+    return dados.dropna(how="all")
 
 
-@st.cache_data
-def buscar_dividendos(ticker, inicio, fim):
-    t = yf.Ticker(ticker)
-    divs = t.dividends
-    return divs.loc[str(inicio):str(fim)]
+def calcular_carteira(dados, aportes):
+    cotas = pd.DataFrame(index=dados.index, columns=dados.columns)
+
+    for col in dados.columns:
+        cotas[col] = aportes / dados[col]
+
+    cotas_acum = cotas.cumsum()
+    carteira = (cotas_acum * dados).sum(axis=1)
+
+    return carteira
 
 
-def calcular_resultado(df, coluna, qtd, corretagem, divs):
-    p_compra = float(df[coluna].iloc[0])
-    p_venda = float(df[coluna].iloc[-1])
-
-    investido = (p_compra * qtd) + corretagem
-    venda = (p_venda * qtd) - corretagem
-    total_divs = float(divs.sum() * qtd)
-
-    lucro = (venda - investido) + total_divs
-    rentab = (lucro / investido) * 100
-
-    return investido, venda, total_divs, lucro, rentab
+def calcular_metricas(retornos):
+    retorno_medio = retornos.mean() * 252
+    vol = retornos.std() * np.sqrt(252)
+    sharpe = retorno_medio / vol if vol != 0 else 0
+    return retorno_medio, vol, sharpe
 
 
 # =========================
 # SIDEBAR
 # =========================
-st.sidebar.header("📊 Configurações")
 
-input_usuario = st.sidebar.text_input("Ativo ou Empresa", "PETR4")
-ticker = tratar_ticker(input_usuario)
+st.sidebar.header("⚙️ Configurações")
 
-data_inicio = st.sidebar.date_input("Data de Compra", datetime(2023, 1, 1))
-data_fim = st.sidebar.date_input("Data de Venda", datetime.today())
+ativos_input = st.sidebar.text_input(
+    "Ativos (separados por vírgula)",
+    "PETR4,VALE3"
+)
 
-qtd_acoes = st.sidebar.number_input("Quantidade", min_value=1, value=100)
-corretagem = st.sidebar.number_input("Corretagem (R$)", min_value=0.0, value=4.50)
+inicio = st.sidebar.date_input("Data início", datetime(2023, 1, 1))
+fim = st.sidebar.date_input("Data fim", datetime.today())
 
-# Validação básica
-if data_inicio >= data_fim:
-    st.error("A data de início deve ser menor que a data final.")
+aporte_mensal = st.sidebar.number_input("Aporte mensal (R$)", value=1000.0)
+usar_csv = st.sidebar.file_uploader("Upload carteira (CSV)", type=["csv"])
+
+# =========================
+# TRATAR ATIVOS
+# =========================
+
+if usar_csv:
+    df_csv = pd.read_csv(usar_csv)
+    ativos = [tratar_ticker(x) for x in df_csv["ticker"]]
+else:
+    ativos = [tratar_ticker(x) for x in ativos_input.split(",")]
+
+ativos.append("^BVSP")  # benchmark
+
+# =========================
+# DADOS
+# =========================
+
+dados = baixar_dados(ativos, inicio, fim)
+
+if dados.empty:
+    st.error("Sem dados.")
     st.stop()
 
+# separa IBOV
+ibov = dados["^BVSP"]
+dados = dados.drop(columns="^BVSP")
+
 # =========================
-# EXECUÇÃO
+# DCA
 # =========================
-try:
-    df = buscar_dados(ticker, data_inicio, data_fim)
 
-    # Corrigir MultiIndex
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+datas_aporte = dados.resample("M").first().index
+aportes = pd.Series(aporte_mensal, index=datas_aporte)
 
-    coluna = "Adj Close" if "Adj Close" in df.columns else "Close"
+carteira = calcular_carteira(dados, aporte_mensal)
 
-    divs = buscar_dividendos(ticker, data_inicio, data_fim)
+# =========================
+# RETORNOS
+# =========================
 
-    investido, venda, total_divs, lucro, rentab = calcular_resultado(
-        df, coluna, qtd_acoes, corretagem, divs
-    )
+retornos = carteira.pct_change().dropna()
+ret_ibov = ibov.pct_change().dropna()
 
-    # =========================
-    # UI
-    # =========================
-    st.title(f"📈 Simulação: {ticker.replace('.SA','')}")
+ret_medio, vol, sharpe = calcular_metricas(retornos)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💰 Investido", f"R$ {investido:,.2f}")
-    c2.metric("💸 Venda", f"R$ {venda:,.2f}")
-    c3.metric("🎁 Dividendos", f"R$ {total_divs:,.2f}")
-    c4.metric("📊 Lucro", f"R$ {lucro:,.2f}", f"{rentab:.2f}%")
+# =========================
+# IR (simplificado 15%)
+# =========================
 
-    # =========================
-    # GRÁFICO
-    # =========================
-    fig = go.Figure()
+lucro = carteira.iloc[-1] - (aporte_mensal * len(datas_aporte))
+ir = lucro * 0.15 if lucro > 0 else 0
 
-    fig.add_trace(go.Scatter(
-        x=df.index,
-        y=df[coluna],
-        mode='lines',
-        name='Preço'
-    ))
+# =========================
+# UI
+# =========================
 
-    fig.update_layout(
-        template="plotly_dark",
-        title="Evolução do Preço",
-        xaxis_title="Data",
-        yaxis_title="Preço (R$)"
-    )
+st.title("🚀 Simulador PRO de Carteira")
 
-    st.plotly_chart(fig, use_container_width=True)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("💰 Valor Final", f"R$ {carteira.iloc[-1]:,.2f}")
+c2.metric("📈 Lucro", f"R$ {lucro:,.2f}")
+c3.metric("🧾 IR (15%)", f"R$ {ir:,.2f}")
+c4.metric("⚡ Sharpe", f"{sharpe:.2f}")
 
-    # =========================
-    # TABELA EXTRA
-    # =========================
-    with st.expander("Ver dados históricos"):
-        st.dataframe(df.tail(50))
+c5, c6 = st.columns(2)
+c5.metric("📊 Retorno Anual", f"{ret_medio*100:.2f}%")
+c6.metric("📉 Volatilidade", f"{vol*100:.2f}%")
 
-except Exception as e:
-    st.error(f"Erro: {str(e)}")
+# =========================
+# GRÁFICO
+# =========================
+
+fig = go.Figure()
+
+fig.add_trace(go.Scatter(
+    x=carteira.index,
+    y=carteira,
+    name="Carteira"
+))
+
+fig.add_trace(go.Scatter(
+    x=ibov.index,
+    y=(ibov / ibov.iloc[0]) * carteira.iloc[0],
+    name="IBOV (normalizado)"
+))
+
+fig.update_layout(template="plotly_dark")
+
+st.plotly_chart(fig, use_container_width=True)
+
+# =========================
+# TABELA
+# =========================
+
+with st.expander("📄 Dados"):
+    st.dataframe(dados.tail(50))
