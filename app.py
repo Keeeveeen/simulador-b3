@@ -3,95 +3,70 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import google.generativeai as genai
 
-# 1. CONFIGURAÇÃO DA CHAVE
-GOOGLE_API_KEY = "AIzaSyAsguDdDiNoiWYaJjWcFBuMErwIpBaEfxw"
-genai.configure(api_key=GOOGLE_API_KEY)
+# Configuração da página
+st.set_page_config(page_title="Simulador B3", layout="wide")
 
-# 2. Configurações de Página
-st.set_page_config(page_title="Simulador B3 Ultra + Gemini", layout="wide")
+# Interface Lateral (Sidebar)
+st.sidebar.header("Configurações de Simulação")
+ticker = st.sidebar.text_input("Ativo (Ex: PETR4, VALE3)", value="PETR4").upper()
+data_inicio = st.sidebar.date_input("Data de Compra", value=datetime(2023, 1, 1))
+data_fim = st.sidebar.date_input("Data de Venda", value=datetime.today())
+qtd_acoes = st.sidebar.number_input("Quantidade de Ações", min_value=1, value=100)
+corretagem = st.sidebar.number_input("Corretagem por Ordem (R$)", min_value=0.0, value=4.50)
 
-# Estilo Dark Customizado
-st.markdown("""
-    <style>
-    .stApp { background-color: #0b0e11; color: #ffffff; }
-    [data-testid="stMetric"] { background-color: #15191c; padding: 20px; border-radius: 12px; border: 1px solid #2d3239; }
-    </style>
-    """, unsafe_allow_html=True)
+# Função para buscar dados
+@st.cache_data
+def carregar_dados(ticket, inicio, fim):
+    # Adicionamos um sufixo .SA se não estiver presente
+    if not ticket.endswith(".SA"):
+        ticket = f"{ticket}.SA"
+    df = yf.download(ticket, start=inicio, end=fim)
+    return df
 
-# 3. Sidebar
-with st.sidebar:
-    st.header("Configurações")
-    busca = st.text_input("Ativo (Ex: PETR4, VALE3)", "PETR4").strip().upper()
-    ticker = f"{busca}.SA" if not busca.endswith(".SA") else busca
+try:
+    # Carregamento de dados
+    dados = carregar_dados(ticker, data_inicio, data_fim)
     
-    st.divider()
-    # Data final em D-2 para evitar erro de mercado aberto
-    data_padrao_fim = datetime.now() - timedelta(days=2)
-    data_compra = st.date_input("Data de Compra", value=pd.to_datetime("2023-01-01"))
-    data_venda = st.date_input("Data de Venda", value=data_padrao_fim)
-    
-    st.divider()
-    qtd = st.number_input("Quantidade de Ações", min_value=1, value=100)
-    taxa = st.number_input("Corretagem por Ordem (R$)", value=4.50)
+    if not dados.empty:
+        # Cálculos Financeiros
+        preco_compra = dados['Adj Close'].iloc[0]
+        preco_venda = dados['Adj Close'].iloc[-1]
+        
+        investimento_inicial = (preco_compra * qtd_acoes) + corretagem
+        valor_final = (preco_venda * qtd_acoes) - corretagem
+        lucro_preço = valor_final - investimento_inicial
+        
+        # Simulação de Dividendos (Simplificada via yfinance)
+        ticker_obj = yf.Ticker(f"{ticker}.SA" if not ticker.endswith(".SA") else ticker)
+        dividendos_hist = ticker_obj.dividends.loc[data_inicio:data_fim]
+        total_dividendos = dividendos_hist.sum() * qtd_acoes
+        
+        lucro_liquido = lucro_preço + total_dividendos
+        rentabilidade = (lucro_liquido / investimento_inicial) * 100
 
-# 4. Coleta de Dados
-@st.cache_data(ttl=3600)
-def get_market_data(t, start, end):
-    try:
-        s = yf.Ticker(t)
-        d = s.history(start=start, end=end)
-        try: n = s.news
-        except: n = []
-        return d, n
-    except:
-        return pd.DataFrame(), []
+        # Dashboard Principal
+        st.title(f"Análise de Performance: {ticker}")
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Investido", f"R$ {float(investimento_inicial):,.2f}")
+        col2.metric("Dividendos Recebidos", f"R$ {float(total_dividendos):,.2f}")
+        col3.metric("Resultado Líquido", f"R$ {float(lucro_liquido):,.2f}", f"{float(rentabilidade):.2f}%")
 
-df_acao, news = get_market_data(ticker, data_compra, data_venda)
+        # Gráfico de Evolução
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=dados.index, y=dados['Adj Close'], mode='lines', name='Preço Ajustado', line=dict(color='#00ff88')))
+        fig.update_layout(
+            title="Histórico de Preço (Ajustado)",
+            template="plotly_dark",
+            xaxis_title="Período",
+            yaxis_title="Preço (R$)",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-# 5. Dashboard
-if df_acao.empty or len(df_acao) < 2:
-    st.warning("⚠️ Dados insuficientes. Tente recuar a data de venda ou mudar o ativo.")
-else:
-    # Limpeza de colunas MultiIndex
-    if isinstance(df_acao.columns, pd.MultiIndex): 
-        df_acao.columns = df_acao.columns.get_level_values(0)
-    
-    precos = df_acao['Close'].dropna()
-    p_ini, p_fim = float(precos.iloc[0]), float(precos.iloc[-1])
-    
-    # Cálculos Financeiros
-    investido = p_ini * qtd
-    valor_final = p_fim * qtd
-    dividendos = df_acao['Dividends'].sum() * qtd
-    lucro_liquido = (valor_final - investido) + dividendos - (taxa * 2)
-    rent_perc = (lucro_liquido / investido) * 100
+    else:
+        st.warning("Ajuste as datas: o mercado pode estar fechado hoje ou o ativo é inválido.")
 
-    st.title(f"Análise de Performance: {busca}")
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Investido", f"R$ {investido:,.2f}")
-    c2.metric("Dividendos", f"R$ {dividendos:,.2f}")
-    c3.metric("Lucro Líquido", f"R$ {lucro_liquido:,.2f}", delta=f"{rent_perc:.2f}%")
-
-    # Gráfico
-    fig = go.Figure(go.Scatter(x=precos.index, y=precos, name="Preço", line=dict(color='#34a853')))
-    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0,r=0,t=20,b=0))
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 6. IA GEMINI (Versão Estável)
-    st.divider()
-    if st.button("✨ Gerar Insight com Gemini IA"):
-        with st.spinner("Analisando mercado..."):
-            try:
-                # Usando o nome de modelo mais compatível
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                
-                contexto = [n.get('title', 'Notícia') for n in news[:3]] if news else ["Sem notícias."]
-                prompt = f"Analise o ativo {busca} com rentabilidade de {rent_perc:.2f}%. Notícias: {contexto}. Explique o motivo da variação."
-                
-                response = model.generate_content(prompt)
-                st.info(f"**Insight da IA:**\n\n{response.text}")
-            except Exception as e:
-                st.error(f"Erro na IA: {str(e)}. Verifique se a biblioteca google-generativeai está no requirements.txt.")
+except Exception as e:
+    st.error(f"Erro inesperado: {e}")
