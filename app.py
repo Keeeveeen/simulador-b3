@@ -5,93 +5,56 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 # Configuração da página
-st.set_page_config(page_title="Simulador B3", layout="wide")
+st.set_page_config(page_title="Simulador B3 - Pro", layout="wide")
 
-# 1. FUNÇÃO DE MAPEAMENTO DE NOMES (Solução para sua dúvida)
+# 1. TRADUTOR DE NOMES PARA TICKERS (Buscador Inteligente)
 def tratar_ticker(nome):
     nome = nome.upper().strip()
-    # Dicionário de conversão manual para nomes comuns
+    
+    # Dicionário manual para nomes comuns que o yfinance não entende direto
     de_para = {
-        "ITAU": "ITUB4",
-        "ITAÚ": "ITUB4",
-        "PETROBRAS": "PETR4",
-        "PETROBRÁS": "PETR4",
-        "VALE": "VALE3",
-        "BANCO DO BRASIL": "BBAS3",
-        "BB": "BBAS3",
-        "BRADESCO": "BBDC4",
-        "MAGALU": "MGLU3",
-        "NUBANK": "ROXO34",
+        # Bancos e Financeiro
+        "ITAU": "ITUB4", "ITAÚ": "ITUB4", "SANTANDER": "SANB11", 
+        "INTER": "INTR", "BANCO INTER": "INTR", "BRADESCO": "BBDC4",
+        "BANCO DO BRASIL": "BBAS3", "BB": "BBAS3", "NUBANK": "ROXO34",
+        "BTG": "BPAC11", "XP": "XPBR31", "ITAUSA": "ITSA4", "ITAÚSA": "ITSA4",
+
+        # Varejo e Consumo
+        "MAGALU": "MGLU3", "MAGAZINE LUIZA": "MGLU3", "CASAS BAHIA": "BHIA3",
+        "VIA VAREJO": "BHIA3", "LOJAS RENNER": "LREN3", "RENNER": "LREN3",
+        "AREZZO": "ARZZ3", "MERCADO LIVRE": "MELI34", "AMBEV": "ABEV3",
+
+        # Commodities, Energia e Indústria
+        "PETROBRAS": "PETR4", "PETROBRÁS": "PETR4", "VALE": "VALE3",
+        "WEG": "WEGE3", "SUZANO": "SUZB3", "GERDAU": "GGBR4",
+        "ELETROBRAS": "ELET3", "ELETROBRÁS": "ELET3", "EQUATORIAL": "EQTL3",
+        "TAESA": "TAEE11", "ENGIE": "EGIE3",
+
+        # Outros Populares
+        "AZUL": "AZUL4", "GOL": "GOLL4", "LOCALIZA": "RENT3", "HAPVIDA": "HAPV3",
+        "B3": "B3SA3"
     }
     
-    # Se o que o usuário digitou está no dicionário, troca pelo ticker
+    # Tenta traduzir o nome, se não achar, usa o que foi digitado
     ticker_final = de_para.get(nome, nome)
     
-    # Garante o sufixo .SA para a B3
-    if not ticker_final.endswith(".SA"):
+    # Regra para ativos da B3 (adiciona .SA se não tiver e não for ativo internacional como INTR ou MELI34)
+    ativos_internacionais = ["INTR", "MELI34", "XPBR31", "ROXO34"]
+    
+    if ticker_final not in ativos_internacionais and not ticker_final.endswith(".SA"):
         ticker_final = f"{ticker_final}.SA"
+        
     return ticker_final
 
-# Interface Lateral
-st.sidebar.header("Configurações de Simulação")
-input_usuario = st.sidebar.text_input("Ativo ou Nome (Ex: Itaú, PETR4)", value="PETR4")
-ticker_corrigido = tratar_ticker(input_usuario) # Aplica a correção aqui
+# 2. INTERFACE LATERAL (Sidebar)
+st.sidebar.header("📊 Configurações")
+input_usuario = st.sidebar.text_input("Ativo ou Empresa (Ex: Itaú, PETR4)", value="PETR4")
+ticker_busca = tratar_ticker(input_usuario)
 
 data_inicio = st.sidebar.date_input("Data de Compra", value=datetime(2023, 1, 1))
 data_fim = st.sidebar.date_input("Data de Venda", value=datetime.today())
 qtd_acoes = st.sidebar.number_input("Quantidade de Ações", min_value=1, value=100)
 corretagem = st.sidebar.number_input("Corretagem por Ordem (R$)", min_value=0.0, value=4.50)
 
-# Função para carregar dados
+# 3. LÓGICA DE DADOS
 @st.cache_data
-def carregar_dados(tk, inicio, fim):
-    try:
-        df = yf.download(tk, start=inicio, end=fim, auto_adjust=False)
-        return df
-    except:
-        return pd.DataFrame()
-
-try:
-    dados = carregar_dados(ticker_corrigido, data_inicio, data_fim)
-    
-    if not dados.empty and len(dados) > 0:
-        # Limpeza de colunas MultiIndex (evita o erro 'Adj Close')
-        if isinstance(dados.columns, pd.MultiIndex):
-            dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
-            
-        # Cálculos com verificação de segurança
-        if 'Adj Close' in dados.columns:
-            preco_compra = float(dados['Adj Close'].iloc[0])
-            preco_venda = float(dados['Adj Close'].iloc[-1])
-            
-            investimento_inicial = (preco_compra * qtd_acoes) + corretagem
-            valor_venda_bruto = (preco_venda * qtd_acoes) - corretagem
-            
-            # Dividendos
-            ticker_obj = yf.Ticker(ticker_corrigido)
-            dividendos_df = ticker_obj.dividends.loc[str(data_inicio):str(data_fim)]
-            total_dividendos = float(dividendos_df.sum() * qtd_acoes)
-            
-            lucro_liquido = (valor_venda_bruto - investimento_inicial) + total_dividendos
-            rentabilidade = (lucro_liquido / investimento_inicial) * 100
-
-            # Dashboard
-            st.title(f"Resultado da Simulação: {ticker_corrigido.replace('.SA', '')}")
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Investido", f"R$ {investimento_inicial:,.2f}")
-            col2.metric("Dividendos", f"R$ {total_dividendos:,.2f}")
-            col3.metric("Lucro Líquido", f"R$ {lucro_liquido:,.2f}", f"{rentabilidade:.2f}%")
-
-            # Gráfico
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=dados.index, y=dados['Adj Close'], mode='lines', line=dict(color='#00ff88')))
-            fig.update_layout(template="plotly_dark", title="Evolução do Preço Ajustado")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.error("Coluna 'Adj Close' não encontrada. Tente outro ativo.")
-    else:
-        st.warning(f"Não encontramos dados para '{input_usuario}'. Verifique se o nome ou código está correto.")
-
-except Exception as e:
-    st.error(f"Erro na simulação: {e}")
