@@ -13,33 +13,71 @@ st.set_page_config(page_title="Simulador B3 PRO MAX", layout="wide")
 
 def tratar_ticker(t):
     t = t.upper().strip()
-    if not t.endswith(".SA") and t != "^BVSP":
+    if t != "^BVSP" and not t.endswith(".SA") and not t.endswith("34"):
         t += ".SA"
     return t
 
 
 @st.cache_data
 def baixar_dados(tickers, inicio, fim):
-    dados = yf.download(tickers, start=inicio, end=fim, progress=False)["Adj Close"]
-    return dados.dropna(how="all")
+    df = yf.download(tickers, start=inicio, end=fim, progress=False)
+
+    if df.empty:
+        raise ValueError("Nenhum dado retornado.")
+
+    # MULTI ATIVOS
+    if isinstance(df.columns, pd.MultiIndex):
+        niveis = df.columns.get_level_values(0)
+
+        if "Adj Close" in niveis:
+            df = df["Adj Close"]
+        elif "Close" in niveis:
+            df = df["Close"]
+        else:
+            raise KeyError("Sem coluna de preço válida.")
+
+    # UM ATIVO
+    else:
+        if "Adj Close" in df.columns:
+            df = df[["Adj Close"]]
+        elif "Close" in df.columns:
+            df = df[["Close"]]
+        else:
+            raise KeyError("Sem coluna de preço válida.")
+
+        # padroniza nome da coluna
+        df.columns = [tickers[0]]
+
+    return df.dropna(how="all")
 
 
-def calcular_carteira(dados, aportes):
+def calcular_carteira(dados, aporte_mensal):
+    datas_aporte = dados.resample("M").first().index
+
     cotas = pd.DataFrame(index=dados.index, columns=dados.columns)
 
     for col in dados.columns:
-        cotas[col] = aportes / dados[col]
+        cotas[col] = 0
+
+    for data in datas_aporte:
+        if data in dados.index:
+            for col in dados.columns:
+                cotas.loc[data, col] += aporte_mensal / len(dados.columns) / dados.loc[data, col]
 
     cotas_acum = cotas.cumsum()
     carteira = (cotas_acum * dados).sum(axis=1)
 
-    return carteira
+    return carteira, len(datas_aporte)
 
 
 def calcular_metricas(retornos):
+    if len(retornos) < 2:
+        return 0, 0, 0
+
     retorno_medio = retornos.mean() * 252
     vol = retornos.std() * np.sqrt(252)
     sharpe = retorno_medio / vol if vol != 0 else 0
+
     return retorno_medio, vol, sharpe
 
 
@@ -58,74 +96,98 @@ inicio = st.sidebar.date_input("Data início", datetime(2023, 1, 1))
 fim = st.sidebar.date_input("Data fim", datetime.today())
 
 aporte_mensal = st.sidebar.number_input("Aporte mensal (R$)", value=1000.0)
-usar_csv = st.sidebar.file_uploader("Upload carteira (CSV)", type=["csv"])
+
+csv_file = st.sidebar.file_uploader("Upload carteira CSV", type=["csv"])
 
 # =========================
 # TRATAR ATIVOS
 # =========================
 
-if usar_csv:
-    df_csv = pd.read_csv(usar_csv)
-    ativos = [tratar_ticker(x) for x in df_csv["ticker"]]
-else:
-    ativos = [tratar_ticker(x) for x in ativos_input.split(",")]
+try:
+    if csv_file:
+        df_csv = pd.read_csv(csv_file)
+        ativos = [tratar_ticker(x) for x in df_csv["ticker"]]
+    else:
+        ativos = [tratar_ticker(x) for x in ativos_input.split(",")]
 
-ativos.append("^BVSP")  # benchmark
+    ativos = list(set(ativos))  # remove duplicados
+
+    # adiciona IBOV se não existir
+    if "^BVSP" not in ativos:
+        ativos.append("^BVSP")
+
+except Exception:
+    st.error("Erro ao ler ativos.")
+    st.stop()
+
+# valida datas
+if inicio >= fim:
+    st.error("Data inicial deve ser menor que final.")
+    st.stop()
 
 # =========================
 # DADOS
 # =========================
 
-dados = baixar_dados(ativos, inicio, fim)
-
-if dados.empty:
-    st.error("Sem dados.")
+try:
+    dados = baixar_dados(ativos, inicio, fim)
+except Exception as e:
+    st.error(f"Erro ao baixar dados: {e}")
     st.stop()
 
-# separa IBOV
-ibov = dados["^BVSP"]
-dados = dados.drop(columns="^BVSP")
+if dados.empty:
+    st.error("Sem dados disponíveis.")
+    st.stop()
+
+# separa IBOV com segurança
+if "^BVSP" in dados.columns:
+    ibov = dados["^BVSP"]
+    dados = dados.drop(columns="^BVSP")
+    usar_ibov = True
+else:
+    usar_ibov = False
+    st.warning("IBOV não disponível.")
+
+if dados.empty:
+    st.error("Nenhum ativo válido.")
+    st.stop()
 
 # =========================
-# DCA
+# CARTEIRA (DCA)
 # =========================
 
-datas_aporte = dados.resample("M").first().index
-aportes = pd.Series(aporte_mensal, index=datas_aporte)
-
-carteira = calcular_carteira(dados, aporte_mensal)
+carteira, n_aportes = calcular_carteira(dados, aporte_mensal)
 
 # =========================
-# RETORNOS
+# MÉTRICAS
 # =========================
 
 retornos = carteira.pct_change().dropna()
-ret_ibov = ibov.pct_change().dropna()
-
 ret_medio, vol, sharpe = calcular_metricas(retornos)
 
-# =========================
-# IR (simplificado 15%)
-# =========================
+investido = aporte_mensal * n_aportes
+valor_final = carteira.iloc[-1]
+lucro = valor_final - investido
 
-lucro = carteira.iloc[-1] - (aporte_mensal * len(datas_aporte))
 ir = lucro * 0.15 if lucro > 0 else 0
 
 # =========================
 # UI
 # =========================
 
-st.title("🚀 Simulador PRO de Carteira")
+st.title("🚀 Simulador Profissional de Carteira")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("💰 Valor Final", f"R$ {carteira.iloc[-1]:,.2f}")
-c2.metric("📈 Lucro", f"R$ {lucro:,.2f}")
-c3.metric("🧾 IR (15%)", f"R$ {ir:,.2f}")
-c4.metric("⚡ Sharpe", f"{sharpe:.2f}")
+c1.metric("💰 Investido", f"R$ {investido:,.2f}")
+c2.metric("📈 Valor Final", f"R$ {valor_final:,.2f}")
+c3.metric("💸 Lucro", f"R$ {lucro:,.2f}")
+c4.metric("🧾 IR (15%)", f"R$ {ir:,.2f}")
 
 c5, c6 = st.columns(2)
 c5.metric("📊 Retorno Anual", f"{ret_medio*100:.2f}%")
 c6.metric("📉 Volatilidade", f"{vol*100:.2f}%")
+
+st.metric("⚡ Sharpe Ratio", f"{sharpe:.2f}")
 
 # =========================
 # GRÁFICO
@@ -139,19 +201,30 @@ fig.add_trace(go.Scatter(
     name="Carteira"
 ))
 
-fig.add_trace(go.Scatter(
-    x=ibov.index,
-    y=(ibov / ibov.iloc[0]) * carteira.iloc[0],
-    name="IBOV (normalizado)"
-))
+if usar_ibov:
+    ibov_norm = (ibov / ibov.iloc[0]) * carteira.iloc[0]
 
-fig.update_layout(template="plotly_dark")
+    fig.add_trace(go.Scatter(
+        x=ibov.index,
+        y=ibov_norm,
+        name="IBOV"
+    ))
+
+fig.update_layout(template="plotly_dark", title="Performance")
 
 st.plotly_chart(fig, use_container_width=True)
+
+# =========================
+# DEBUG OPCIONAL
+# =========================
+
+with st.expander("🔍 Debug"):
+    st.write("Ativos:", ativos)
+    st.write("Colunas dados:", dados.columns)
 
 # =========================
 # TABELA
 # =========================
 
-with st.expander("📄 Dados"):
+with st.expander("📄 Dados históricos"):
     st.dataframe(dados.tail(50))
