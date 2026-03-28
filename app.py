@@ -21,8 +21,9 @@ def tratar_ticker(nome):
         "ELETROBRAS": "ELET3", "ELETROBRÁS": "ELET3", "TAESA": "TAEE11"
     }
     ticker_final = de_para.get(nome, nome)
-    ativos_internacionais = ["INTR", "MELI34", "XPBR31", "ROXO34"]
-    if ticker_final not in ativos_internacionais and not ticker_final.endswith(".SA"):
+    # Ativos que não precisam de .SA
+    internacionais = ["INTR", "MELI34", "XPBR31", "ROXO34"]
+    if ticker_final not in internacionais and not ticker_final.endswith(".SA"):
         ticker_final = f"{ticker_final}.SA"
     return ticker_final
 
@@ -36,7 +37,7 @@ data_fim = st.sidebar.date_input("Data de Venda", value=datetime.today())
 qtd_acoes = st.sidebar.number_input("Quantidade de Ações", min_value=1, value=100)
 corretagem = st.sidebar.number_input("Corretagem por Ordem (R$)", min_value=0.0, value=4.50)
 
-# 3. LÓGICA DE DADOS (Corrigindo o erro da linha 60)
+# 3. LÓGICA DE DADOS
 @st.cache_data
 def buscar_dados(tk, inicio, fim):
     try:
@@ -76,5 +77,4 @@ try:
         m2.metric("Dividendos", f"R$ {total_divs:,.2f}")
         m3.metric("Lucro Líquido", f"R$ {lucro_abs:,.2f}", f"{rentab_pct:.2f}%")
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_precos.index, y
+        # CORREÇÃO DA LIN
