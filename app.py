@@ -4,14 +4,20 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 
-# Configuração da página
-st.set_page_config(page_title="Simulador B3 - Pro", layout="wide")
+# =========================
+# CONFIGURAÇÃO DA PÁGINA
+# =========================
+st.set_page_config(page_title="Simulador B3 Pro", layout="wide")
 
-# 1. TRADUTOR DE NOMES PARA TICKERS
-def tratar_ticker(nome):
+# =========================
+# FUNÇÕES
+# =========================
+
+def tratar_ticker(nome: str) -> str:
     nome = nome.upper().strip()
+
     de_para = {
-        "ITAU": "ITUB4", "ITAÚ": "ITUB4", "SANTANDER": "SANB11", 
+        "ITAU": "ITUB4", "ITAÚ": "ITUB4", "SANTANDER": "SANB11",
         "INTER": "INTR", "BANCO INTER": "INTR", "BRADESCO": "BBDC4",
         "BANCO DO BRASIL": "BBAS3", "BB": "BBAS3", "NUBANK": "ROXO34",
         "BTG": "BPAC11", "XP": "XPBR31", "ITAUSA": "ITSA4", "ITAÚSA": "ITSA4",
@@ -20,70 +26,118 @@ def tratar_ticker(nome):
         "WEG": "WEGE3", "SUZANO": "SUZB3", "GERDAU": "GGBR4",
         "ELETROBRAS": "ELET3", "ELETROBRÁS": "ELET3", "TAESA": "TAEE11"
     }
-    ticker_final = de_para.get(nome, nome)
-    internacionais = ["INTR", "MELI34", "XPBR31", "ROXO34"]
-    if ticker_final not in internacionais and not ticker_final.endswith(".SA"):
-        ticker_final = f"{ticker_final}.SA"
-    return ticker_final
 
-# 2. INTERFACE LATERAL
-st.sidebar.header("📊 Configurações")
-input_usuario = st.sidebar.text_input("Ativo ou Empresa", value="PETR4")
-ticker_busca = tratar_ticker(input_usuario)
+    ticker = de_para.get(nome, nome)
 
-data_inicio = st.sidebar.date_input("Data de Compra", value=datetime(2023, 1, 1))
-data_fim = st.sidebar.date_input("Data de Venda", value=datetime.today())
-qtd_acoes = st.sidebar.number_input("Quantidade de Ações", min_value=1, value=100)
-corretagem = st.sidebar.number_input("Corretagem por Ordem (R$)", min_value=0.0, value=4.50)
+    if not ticker.endswith(".SA") and not ticker.endswith("34"):
+        ticker += ".SA"
 
-# 3. FUNÇÃO DE DADOS
+    return ticker
+
+
 @st.cache_data
-def buscar_dados(tk, inicio, fim):
-    try:
-        df = yf.download(tk, start=inicio, end=fim, auto_adjust=False)
-        return df
-    except:
-        return pd.DataFrame()
+def buscar_dados(ticker, inicio, fim):
+    df = yf.download(ticker, start=inicio, end=fim, progress=False)
+    if df.empty:
+        raise ValueError("Nenhum dado encontrado.")
+    return df
 
-# 4. EXECUÇÃO PRINCIPAL (Bloco Try/Except Completo)
+
+@st.cache_data
+def buscar_dividendos(ticker, inicio, fim):
+    t = yf.Ticker(ticker)
+    divs = t.dividends
+    return divs.loc[str(inicio):str(fim)]
+
+
+def calcular_resultado(df, coluna, qtd, corretagem, divs):
+    p_compra = float(df[coluna].iloc[0])
+    p_venda = float(df[coluna].iloc[-1])
+
+    investido = (p_compra * qtd) + corretagem
+    venda = (p_venda * qtd) - corretagem
+    total_divs = float(divs.sum() * qtd)
+
+    lucro = (venda - investido) + total_divs
+    rentab = (lucro / investido) * 100
+
+    return investido, venda, total_divs, lucro, rentab
+
+
+# =========================
+# SIDEBAR
+# =========================
+st.sidebar.header("📊 Configurações")
+
+input_usuario = st.sidebar.text_input("Ativo ou Empresa", "PETR4")
+ticker = tratar_ticker(input_usuario)
+
+data_inicio = st.sidebar.date_input("Data de Compra", datetime(2023, 1, 1))
+data_fim = st.sidebar.date_input("Data de Venda", datetime.today())
+
+qtd_acoes = st.sidebar.number_input("Quantidade", min_value=1, value=100)
+corretagem = st.sidebar.number_input("Corretagem (R$)", min_value=0.0, value=4.50)
+
+# Validação básica
+if data_inicio >= data_fim:
+    st.error("A data de início deve ser menor que a data final.")
+    st.stop()
+
+# =========================
+# EXECUÇÃO
+# =========================
 try:
-    df_precos = buscar_dados(ticker_busca, data_inicio, data_fim)
-    
-    if not df_precos.empty:
-        # Resolve erro 'Adj Close' de MultiIndex
-        if isinstance(df_precos.columns, pd.MultiIndex):
-            df_precos.columns = [col[0] if isinstance(col, tuple) else col for col in df_precos.columns]
-        
-        coluna_alvo = 'Adj Close' if 'Adj Close' in df_precos.columns else 'Close'
-        
-        p_compra = float(df_precos[coluna_alvo].iloc[0])
-        p_venda = float(df_precos[coluna_alvo].iloc[-1])
-        
-        investido = (p_compra * qtd_acoes) + corretagem
-        venda_bruta = (p_venda * qtd_acoes) - corretagem
-        
-        obj_ticker = yf.Ticker(ticker_busca)
-        divs = obj_ticker.dividends.loc[str(data_inicio):str(data_fim)]
-        total_divs = float(divs.sum() * qtd_acoes)
-        
-        lucro_abs = (venda_bruta - investido) + total_divs
-        rentab_pct = (lucro_abs / investido) * 100
+    df = buscar_dados(ticker, data_inicio, data_fim)
 
-        st.title(f"Resultado: {ticker_busca.replace('.SA', '')}")
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Investimento Total", f"R$ {investido:,.2f}")
-        m2.metric("Dividendos", f"R$ {total_divs:,.2f}")
-        m3.metric("Lucro Líquido", f"R$ {lucro_abs:,.2f}", f"{rentab_pct:.2f}%")
+    # Corrigir MultiIndex
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-        # Gráfico
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_precos.index, y=df_precos[coluna_alvo], mode='lines', line=dict(color='#00ff88')))
-        fig.update_layout(template="plotly_dark", title=f"Evolução {ticker_busca}")
-        st.plotly_chart(fig, use_container_width=True)
+    coluna = "Adj Close" if "Adj Close" in df.columns else "Close"
 
-    else:
-        st.warning(f"Não foram encontrados dados para '{input_usuario}'.")
+    divs = buscar_dividendos(ticker, data_inicio, data_fim)
+
+    investido, venda, total_divs, lucro, rentab = calcular_resultado(
+        df, coluna, qtd_acoes, corretagem, divs
+    )
+
+    # =========================
+    # UI
+    # =========================
+    st.title(f"📈 Simulação: {ticker.replace('.SA','')}")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💰 Investido", f"R$ {investido:,.2f}")
+    c2.metric("💸 Venda", f"R$ {venda:,.2f}")
+    c3.metric("🎁 Dividendos", f"R$ {total_divs:,.2f}")
+    c4.metric("📊 Lucro", f"R$ {lucro:,.2f}", f"{rentab:.2f}%")
+
+    # =========================
+    # GRÁFICO
+    # =========================
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=df[coluna],
+        mode='lines',
+        name='Preço'
+    ))
+
+    fig.update_layout(
+        template="plotly_dark",
+        title="Evolução do Preço",
+        xaxis_title="Data",
+        yaxis_title="Preço (R$)"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # =========================
+    # TABELA EXTRA
+    # =========================
+    with st.expander("Ver dados históricos"):
+        st.dataframe(df.tail(50))
 
 except Exception as e:
-    st.error(f"Erro na simulação: {e}")
+    st.error(f"Erro: {str(e)}")
