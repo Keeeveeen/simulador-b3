@@ -21,7 +21,6 @@ def tratar_ticker(nome):
         "ELETROBRAS": "ELET3", "ELETROBRÁS": "ELET3", "TAESA": "TAEE11"
     }
     ticker_final = de_para.get(nome, nome)
-    # Ativos que não precisam de .SA
     internacionais = ["INTR", "MELI34", "XPBR31", "ROXO34"]
     if ticker_final not in internacionais and not ticker_final.endswith(".SA"):
         ticker_final = f"{ticker_final}.SA"
@@ -37,16 +36,16 @@ data_fim = st.sidebar.date_input("Data de Venda", value=datetime.today())
 qtd_acoes = st.sidebar.number_input("Quantidade de Ações", min_value=1, value=100)
 corretagem = st.sidebar.number_input("Corretagem por Ordem (R$)", min_value=0.0, value=4.50)
 
-# 3. LÓGICA DE DADOS
+# 3. FUNÇÃO DE DADOS
 @st.cache_data
 def buscar_dados(tk, inicio, fim):
     try:
         df = yf.download(tk, start=inicio, end=fim, auto_adjust=False)
         return df
-    except Exception:
+    except:
         return pd.DataFrame()
 
-# Execução principal
+# 4. EXECUÇÃO PRINCIPAL (Bloco Try/Except Completo)
 try:
     df_precos = buscar_dados(ticker_busca, data_inicio, data_fim)
     
@@ -77,4 +76,14 @@ try:
         m2.metric("Dividendos", f"R$ {total_divs:,.2f}")
         m3.metric("Lucro Líquido", f"R$ {lucro_abs:,.2f}", f"{rentab_pct:.2f}%")
 
-        # CORREÇÃO DA LIN
+        # Gráfico
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_precos.index, y=df_precos[coluna_alvo], mode='lines', line=dict(color='#00ff88')))
+        fig.update_layout(template="plotly_dark", title=f"Evolução {ticker_busca}")
+        st.plotly_chart(fig, use_container_width=True)
+
+    else:
+        st.warning(f"Não foram encontrados dados para '{input_usuario}'.")
+
+except Exception as e:
+    st.error(f"Erro na simulação: {e}")
